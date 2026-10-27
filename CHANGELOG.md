@@ -1,0 +1,51 @@
+# Changelog
+
+All notable changes to wfwatch are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.1.0] - 2026-10-27
+
+First public release. wfwatch reads files that Claude Code writes for its own use; their format is
+not documented and may change with any Claude Code update. This release was checked against
+Claude Code 2.1.311.
+
+### Added
+
+- Overview of everything that is going on: workflow runs (running, or finished in the last
+  30 minutes) and Claude Code sessions without a workflow (working, waiting for you, running a
+  background command, or idle for less than 15 minutes), numbered for quick switching, with a
+  shared log.
+- Workflow diagram: a phase timeline, the current phase with its agents fanned out as cards
+  (model, status, time, rhythm of tool calls, calls, context, last action), neighbouring phases,
+  a log and a status line. The layout adapts to the terminal, from 80x24 to wide screens.
+- Cards view (`v` or `--cards`): agents of each phase as cards, scrolled with PgUp/PgDn and
+  Home/End; `a` expands every phase.
+- Session view: recent actions, subagents fanned out like workflow agents, the session log and
+  background commands.
+- Background commands (Bash with `run_in_background`): a session that is quiet while one runs
+  is shown as "background task", not as idle, with the command, how long it runs, the process
+  it is running now (CPU %) and the last line of its output.
+- Agents replaced after a workflow resume are dimmed and left out of the counts.
+- `--list` of recent runs; `--once` prints one frame to stdout; a run id, its beginning or a part
+  of the workflow name opens that run.
+- Keys: `1`–`9` (two digits in a row for 10 and above), Tab/Shift+Tab and ←/→, ↑/↓, `o`/`0`/Esc,
+  `f`, `v`, `a`, `q`. Letter keys also work in the Russian keyboard layout.
+- English and Russian interface: `--lang`, `WFWATCH_LANG` or the locale (`LC_ALL`, `LC_MESSAGES`,
+  `LANG`).
+- Dark and light themes: `--theme auto|dark|light` (auto follows `COLORFGBG`); `NO_COLOR` is
+  respected.
+- Text from transcripts (names, labels, tool arguments, messages, output lines) is shown as plain
+  text: control characters are dropped and line breaks become spaces, so it can neither drive the
+  terminal nor break the layout. Task notifications are taken only from Claude Code's own records,
+  and a background command's output is read only under `/tmp/claude-<uid>/` or `CLAUDE_CONFIG_DIR`.
+- Resilience: unexpected or malformed lines in transcripts are skipped; a read or render failure
+  shows in the status line instead of closing the program (`--debug` re-raises it); the terminal
+  is restored after `q`, Ctrl+C, SIGTERM and SIGHUP.
+- `--version` and `python -m wfwatch`.
+
+[Unreleased]: https://github.com/zamirka/wfwatch/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/zamirka/wfwatch/releases/tag/v0.1.0

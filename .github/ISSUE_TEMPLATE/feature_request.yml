@@ -1,0 +1,21 @@
+name: Feature request
+description: Suggest an idea for wfwatch
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you would like to see
+      description: What you are trying to do and what is missing or inconvenient now.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: How it could work
+      description: A screen, a key, an option – whatever you have in mind. A sketch in text is welcome.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Other ways you have tried or considered.

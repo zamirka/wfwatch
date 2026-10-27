@@ -1,0 +1,165 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install (ruff is pinned in the dev extra)
+        run: python -m pip install -e ".[dev]"
+      - run: ruff check --output-format=github .
+      - run: ruff format --check --diff .
+
+  test:
+    name: test (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install -e ".[dev]"
+      - name: pytest (opening a file without an explicit encoding is an error)
+        env:
+          PYTHONWARNDEFAULTENCODING: "1"
+        run: python -m pytest -q -W error::EncodingWarning
+
+  oldest:
+    name: test (Python 3.10, Rich 13.0.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.10"
+      - name: Install with the oldest supported Rich
+        run: python -m pip install -e ".[dev]" "rich==13.0.0"
+      - run: python -m pytest -q
+
+  environment:
+    # The tests pin the language, the terminal size and colors themselves: whatever the machine
+    # running them has must not change the result.
+    name: test (unusual environment)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install -e ".[dev]"
+      - name: Russian locale, 40 columns, UTC+14, NO_COLOR, dumb terminal
+        env:
+          LANG: ru_RU.UTF-8
+          WFWATCH_LANG: ru
+          COLUMNS: "40"
+          LINES: "10"
+          TZ: Pacific/Kiritimati
+          NO_COLOR: "1"
+          TERM: dumb
+        run: python -m pytest -q
+      - name: C locale, 300 columns, UTC-12, FORCE_COLOR, light background
+        env:
+          LC_ALL: C
+          COLUMNS: "300"
+          LINES: "100"
+          TZ: Etc/GMT+12
+          FORCE_COLOR: "1"
+          COLORFGBG: "0;15"
+          TERM: xterm-256color
+        run: python -m pytest -q
+
+  package:
+    name: package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Build the sdist and the wheel
+        run: |
+          python -m pip install build twine
+          python -m build
+          python -m twine check --strict dist/*
+      - name: Install the wheel into a clean virtual environment
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/python" -m pip install dist/*.whl
+      - name: Run the installed command
+        # Outside the checkout, so that the installed package is used, not the source tree.
+        working-directory: ${{ runner.temp }}
+        env:
+          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/empty-claude-config
+        run: |
+          export PATH="$RUNNER_TEMP/venv/bin:$PATH"
+          mkdir -p "$CLAUDE_CONFIG_DIR"
+          wfwatch --version
+          python -m wfwatch --version
+          test "$(wfwatch --version)" = "wfwatch $(python -c 'from importlib.metadata import version; print(version("wfwatch"))')"
+          wfwatch --help > /dev/null
+          wfwatch --list --width 100
+          wfwatch --once --width 120
+          wfwatch --once --lang ru --width 120
+          code=0; wfwatch > /dev/null 2>&1 || code=$?
+          test "$code" -eq 2  # the full-screen mode needs a terminal: a message and code 2, not a hang
+      - name: Run the installed command on demo data
+        working-directory: ${{ runner.temp }}
+        run: |
+          if [ ! -f "$GITHUB_WORKSPACE/scripts/demo_data.py" ]; then
+            echo "scripts/demo_data.py is not in the repository: skipped"
+            exit 0
+          fi
+          python "$GITHUB_WORKSPACE/scripts/demo_data.py" "$RUNNER_TEMP/demo"
+          export CLAUDE_CONFIG_DIR="$RUNNER_TEMP/demo" PATH="$RUNNER_TEMP/venv/bin:$PATH"
+          wfwatch --list --width 120
+          wfwatch --once --width 120
+          wfwatch --once --overview --width 200
+          wfwatch --once --cards --width 100
+          wfwatch --once --lang ru --theme light --width 120
+      - name: Run the tests from the sdist
+        run: |
+          mkdir "$RUNNER_TEMP/sdist"
+          tar -xzf dist/*.tar.gz -C "$RUNNER_TEMP/sdist"
+          "$RUNNER_TEMP/venv/bin/python" -m pip install pytest
+          cd "$RUNNER_TEMP"/sdist/wfwatch-*/
+          "$RUNNER_TEMP/venv/bin/python" -m pytest -q

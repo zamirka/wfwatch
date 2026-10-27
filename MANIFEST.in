@@ -1,0 +1,4 @@
+# The sdist carries the tests (with their fixtures) and the changelog, besides the package itself.
+include CHANGELOG.md
+graft tests
+global-exclude __pycache__ *.py[cod]

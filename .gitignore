@@ -1,0 +1,23 @@
+# virtual environments
+.venv/
+venv/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# build artifacts
+build/
+dist/
+*.egg-info/
+
+# coverage
+.coverage
+.coverage.*
+htmlcov/
+
+# macOS
+.DS_Store

@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wfwatch"
+dynamic = ["version"]
+description = "Live terminal view of Claude Code workflows, subagents and sessions"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "Zamir Musaev" }]
+keywords = ["claude-code", "workflow", "subagents", "monitor", "tui", "terminal", "rich"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Natural Language :: English",
+    "Natural Language :: Russian",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development",
+    "Topic :: System :: Monitoring",
+    "Topic :: Terminals",
+]
+# 13.0.0 is the oldest Rich the tests run against (the "oldest" job in CI).
+dependencies = ["rich>=13.0.0"]
+
+[project.optional-dependencies]
+# ruff is pinned: new releases add rules and change formatting, CI must not turn red by itself.
+dev = ["pytest>=7", "ruff==0.17.3"]
+demo = ["pillow>=10"]
+
+[project.urls]
+Homepage = "https://github.com/zamirka/wfwatch"
+Issues = "https://github.com/zamirka/wfwatch/issues"
+Changelog = "https://github.com/zamirka/wfwatch/blob/main/CHANGELOG.md"
+
+[project.scripts]
+wfwatch = "wfwatch.cli:main"
+
+[tool.setuptools]
+packages = ["wfwatch"]
+
+[tool.setuptools.dynamic]
+version = { attr = "wfwatch.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["wfwatch"]

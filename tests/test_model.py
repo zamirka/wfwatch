@@ -211,6 +211,27 @@ def test_resume_reopens_run(demo_run):
     assert [event_text(e) for e in run_events] == ["workflow launched", "workflow completed", "workflow resumed"]
 
 
+def test_workflow_stopped_with_task_stop(demo_run):
+    h, sess, run_dir = demo_run
+    h.jl(
+        sess.with_suffix(".jsonl"),
+        h.assistant(h.ago(minutes=2, seconds=1), "m9", [h.tool("TaskStop", "toolu_S", task_id="t1")]),
+        {
+            "type": "user",
+            "timestamp": h.ago(minutes=2),
+            "toolUseResult": {
+                "message": "Successfully stopped task: t1",
+                "task_id": "t1",
+                "task_type": "local_workflow",
+            },
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_S", "content": "Stopped"}]},
+        },
+    )
+    run = model.Run(run_dir)
+    run.poll(model.load_sessions())
+    assert run.state == "killed" and run.agents["a2"].status == model.STALE
+
+
 def test_dead_session_without_notification_is_stopped(demo_run):
     _, _, run_dir = demo_run
     run = model.Run(run_dir)

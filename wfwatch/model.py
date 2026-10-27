@@ -911,6 +911,8 @@ _NOTIFY = b"<task-notification>"
 _BG_LAUNCH = b'"run_in_background"'
 _BASH = (b'"name":"Bash"', b'"name": "Bash"')  # a foreground command that times out moves to the background
 _BG_ID = b'"backgroundTaskId"'
+_STOP_IDS = (b'"task_id"', b'"shell_id"')  # a TaskStop (KillShell before it) call and its result
+_STOP_TOOLS = ("TaskStop", "KillShell")
 _API_LINES = (b'{"type":"api-request-',)  # request logs: huge, and they only repeat the history
 _TS = re.compile(rb'"timestamp"\s*:\s*"([^"]{1,64})"')
 _CWD = re.compile(rb'"cwd"\s*:\s*"((?:[^"\\]|\\.){1,1024})"')
@@ -1046,13 +1048,16 @@ class SessionLog:
 
     def __init__(self, path: Path):
         self.path = path
-        self.tail = Tail(path, needles=(_LAUNCH, _NOTIFY, _BG_LAUNCH, _BG_ID, *_BASH), skip_prefixes=_API_LINES)
+        self.tail = Tail(
+            path, needles=(_LAUNCH, _NOTIFY, _BG_LAUNCH, _BG_ID, *_BASH, *_STOP_IDS), skip_prefixes=_API_LINES
+        )
         self.generation = 0  # bumped when the transcript was replaced and everything was read anew
         self.launches: list[Launch] = []
-        self.notices: dict[str, Notice] = {}  # task id -> first notification
+        self.notices: dict[str, Notice] = {}  # task id -> first notification (or stop)
         self.bg: dict[str, BgTask] = {}  # task id -> background command, in start order
         # recent Bash calls: tool_use id -> (time, description); one may come back as a background task
         self._pending: dict[str, tuple[datetime | None, str]] = {}
+        self._stops: dict[str, str] = {}  # TaskStop calls waiting for their result: tool_use id -> task id
 
     def poll(self) -> None:
         for ln in self.tail.lines():
@@ -1067,7 +1072,7 @@ class SessionLog:
         if self.tail.reset:  # the transcript was replaced: everything is read anew
             self.tail.reset = False
             self.generation += 1
-            self.launches, self.notices, self.bg, self._pending = [], {}, {}, {}
+            self.launches, self.notices, self.bg, self._pending, self._stops = [], {}, {}, {}, {}
 
     def _line(self, ln: bytes) -> None:
         d = _loads(ln)
@@ -1089,6 +1094,8 @@ class SessionLog:
                 )
             if _s(tur.get("backgroundTaskId")):
                 self._bg_started(_s(tur["backgroundTaskId"]), d, ts)
+            if self._stops and d.get("type") == "user":
+                self._stop_result(tur, d, ts)
         if d.get("type") == "assistant":
             self._bash_calls(d, ts)
         elif _NOTIFY in ln and (text := _notice_text(d)):
@@ -1098,15 +1105,35 @@ class SessionLog:
 
     def _bash_calls(self, d: dict, ts: datetime | None) -> None:
         """Remember Bash calls: started with run_in_background, or still running when their timeout
-        hits, they come back with a backgroundTaskId."""
+        hits, they come back with a backgroundTaskId. Remember TaskStop calls too."""
         for c in _content(d):
-            if not isinstance(c, dict) or c.get("type") != "tool_use" or c.get("name") != "Bash":
+            if not isinstance(c, dict) or c.get("type") != "tool_use" or not _s(c.get("id")):
                 continue
             inp = c.get("input")
-            if isinstance(inp, dict) and _s(c.get("id")):
+            if not isinstance(inp, dict):
+                continue
+            if c.get("name") == "Bash":
                 self._pending[_s(c["id"])] = (ts, first_line(inp.get("description") or inp.get("command"), 120))
-        while len(self._pending) > self.PENDING_MAX:
-            del self._pending[next(iter(self._pending))]
+            elif c.get("name") in _STOP_TOOLS and (task_id := clean(_s(inp.get("task_id") or inp.get("shell_id")))):
+                self._stops[_s(c["id"])] = task_id
+        for calls in (self._pending, self._stops):
+            while len(calls) > self.PENDING_MAX:
+                del calls[next(iter(calls))]
+
+    def _stop_result(self, tur: dict, d: dict, ts: datetime | None) -> None:
+        """A task stopped with TaskStop gets no notification: the call's successful result is the
+        only record of it. Counted only as the result of a TaskStop call seen before, for the task
+        that call named."""
+        for c in _content(d):
+            if not isinstance(c, dict) or c.get("type") != "tool_result" or c.get("is_error"):
+                continue
+            task_id = self._stops.pop(_s(c.get("tool_use_id")), "")
+            if not task_id or clean(_s(tur.get("task_id") or tur.get("shell_id"))) != task_id:
+                continue
+            if task_id not in self.notices:  # a notification that came first stays
+                n = self.notices[task_id] = Notice(ts or now(), "killed")
+                if task_id in self.bg:
+                    self.bg[task_id].apply(n)
 
     def _bg_started(self, task_id: str, d: dict, ts: datetime | None) -> None:
         tool_use_id, output = "", ""

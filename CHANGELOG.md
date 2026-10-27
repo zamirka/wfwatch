@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-28
+
+### Fixed
+
+- A background command or a workflow stopped with the TaskStop tool no longer shows as running
+  forever. Claude Code sends no notification for such a task; the successful result of the
+  TaskStop call is now taken as its end ("killed").
+
 ## [0.1.0] - 2026-10-27
 
 First public release. wfwatch reads files that Claude Code writes for its own use; their format is
@@ -47,5 +55,6 @@ Claude Code 2.1.311.
   is restored after `q`, Ctrl+C, SIGTERM and SIGHUP.
 - `--version` and `python -m wfwatch`.
 
-[Unreleased]: https://github.com/zamirka/wfwatch/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/zamirka/wfwatch/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/zamirka/wfwatch/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/zamirka/wfwatch/releases/tag/v0.1.0

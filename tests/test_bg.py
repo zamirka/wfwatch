@@ -154,6 +154,52 @@ def test_notification_in_a_user_message_and_failure(claude_home):
     assert (t.status, t.exit_code) == ("failed", 2)
 
 
+def stop_result(h, ts, tool_use_id, task_id, is_error=False):
+    """The result of a TaskStop call: a task stopped this way gets no notification."""
+    block = {"type": "tool_result", "tool_use_id": tool_use_id, "content": f"Stopped {task_id}"}
+    if is_error:
+        block["is_error"] = True
+    return {
+        "type": "user",
+        "timestamp": ts,
+        "toolUseResult": {
+            "message": f"Successfully stopped task: {task_id} (pytest -q)",
+            "task_id": task_id,
+            "task_type": "local_bash",
+            "command": "pytest -q",
+        },
+        "message": {"content": [block]},
+    }
+
+
+def test_command_stopped_with_task_stop(claude_home):
+    h = claude_home
+    path, _ = bg_session(h)
+    w = model.SessionWatch("s-bg", path, model.load_sessions()["s-bg"])
+    w.poll()
+    h.jl(
+        path,
+        stop_result(h, h.ago(seconds=40), "toolu_nocall", "bgA"),  # no TaskStop call was made
+        h.assistant(h.ago(seconds=35), "m5", [h.tool("TaskStop", "toolu_S1", task_id="bgA")]),
+        stop_result(h, h.ago(seconds=34), "toolu_S1", "bgA", is_error=True),  # the stop failed
+        h.assistant(h.ago(seconds=30), "m6", [h.tool("TaskStop", "toolu_S2", task_id="bgOther")]),
+        stop_result(h, h.ago(seconds=29), "toolu_S2", "bgA"),  # the call named another task
+    )
+    w.poll()
+    (t,) = w.bg_tasks
+    assert (t.status, w.state) == (model.RUNNING, model.BACKGROUND)
+
+    h.jl(
+        path,
+        h.assistant(h.ago(seconds=12), "m7", [h.tool("TaskStop", "toolu_S3", task_id="bgA")]),
+        stop_result(h, h.ago(seconds=11), "toolu_S3", "bgA"),
+        h.notify("bgA", "completed", h.ago(seconds=10)),  # a late notification does not undo the stop
+    )
+    w.poll()
+    assert (t.status, t.exit_code) == ("killed", None) and t.ended is not None
+    assert w.running_bg_tasks() == [] and w.state == model.IDLE
+
+
 def test_output_path_is_derived_when_not_given(claude_home):
     h = claude_home
     path, _ = bg_session(h, output=False)

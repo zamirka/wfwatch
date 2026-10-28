@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A background command that sends its output to a file of its own
+  (`blender -b scene.blend -a > render.log 2>&1`) shows the last line of that file: Claude Code's
+  output file stays empty then. The file is the one the running process writes its stdout or
+  stderr to, as the system tells (`lsof` on macOS, `/proc` on Linux), not a path from the
+  transcript. Whichever of the two files was written last gives the line.
+
+### Changed
+
+- An MCP tool call shows its server: `blender · execute_blender_code`, `playwright · browser_click`
+  instead of the bare tool name.
+
+### Fixed
+
+- An output file that is not a regular file (a named pipe) is not read: opening it could block.
+
 ## [0.1.1] - 2026-10-28
 
 ### Fixed

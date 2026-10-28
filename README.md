@@ -173,7 +173,10 @@ of its output:
 ⚙ background: Run benchmark suite · 5:30 · now python3 97% · «[35/42] bench_orm_select  33.90 ms ±0.3%»
 ```
 
-A finished command shows its exit code.
+A command may send its output to a file of its own (`blender -b scene.blend -a > render.log 2>&1`),
+and then the output file of Claude Code stays empty. wfwatch asks the system which file the
+running process writes to and shows the last line of that file or of the output file, whichever
+was written last. A finished command shows its exit code.
 
 ### States
 
@@ -210,6 +213,7 @@ that variable to watch another directory.
 | `sessions/<pid>.json` | running sessions: name, status, working directory, where the session is open |
 | `/tmp/claude-<uid>/<project>/<session>/tasks/<task>.output` | the output of background commands (its last line) |
 | `ps` | whether a session's process is alive, what its Bash tool is running right now |
+| `lsof` (macOS), `/proc/<pid>/fd` (Linux) | the file a background command writes to instead of its output file (`> render.log`): its last line |
 
 Transcripts are read incrementally: only the lines added since the last read, in chunks, so a long
 history stays cheap. Files are re-read twice a second; the list of runs, the sessions and the
@@ -247,8 +251,8 @@ foreground color. With `NO_COLOR` set, colors are dropped.
 
 ## Privacy
 
-Everything stays on your machine. wfwatch reads the files listed above and runs `ps`; it writes
-nothing, opens no network connections and sends nothing anywhere.
+Everything stays on your machine. wfwatch reads the files listed above and runs `ps` (and `lsof` on
+macOS); it writes nothing, opens no network connections and sends nothing anywhere.
 
 The screen does show what is in your transcripts: project and session names, file paths, commands,
 search queries, URLs and the first lines of what agents write. Keep that in mind when you share

@@ -1,6 +1,8 @@
 """Background commands of a session (Bash with run_in_background) and the processes behind them."""
 
 import os
+import subprocess
+import sys
 
 import pytest
 
@@ -367,3 +369,180 @@ def test_output_files_are_read_only_where_claude_code_keeps_them(claude_home, tm
     w = model.SessionWatch("s-bg", path, model.load_sessions()["s-bg"])
     evil = "../../../../../../" + str(target.with_suffix(""))
     assert not model.output_allowed(w.output_path(evil))
+
+
+# ---- a command that sends its output to a file of its own (`> render.log 2>&1`) ----
+
+LSOF = """\
+p520
+f1
+aw
+tREG
+n/tmp/claude-501/-p/s-bg/tasks/bgA.output
+f2
+aw
+tREG
+n/tmp/claude-501/-p/s-bg/tasks/bgA.output
+p522
+f1
+aw
+tREG
+n/work/render.log
+f2
+au
+tREG
+n/work/render.log
+p531
+f1
+aw
+tCHR
+n/dev/null
+f2
+ar
+tREG
+n/work/read-only.txt
+garbage
+f3
+"""
+
+
+def test_parse_lsof():
+    """Regular files open for writing, with their descriptors; /dev/null and a file opened for reading do not count."""
+    assert model.parse_lsof(LSOF) == {
+        520: [(1, "/tmp/claude-501/-p/s-bg/tasks/bgA.output"), (2, "/tmp/claude-501/-p/s-bg/tasks/bgA.output")],
+        522: [(1, "/work/render.log"), (2, "/work/render.log")],
+    }
+    assert model.parse_lsof("p1\nfcwd\naw\ntREG\nn/x\n") == {}  # not a descriptor
+    assert model.parse_lsof("") == {}
+
+
+def test_tool_shells_pair_each_shell_with_its_busiest_leaf():
+    assert sorted((sh.pid, leaf.pid) for sh, leaf in table().tool_shells(500)) == [(520, 522), (530, 531)]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no lsof and no /proc")
+def test_open_files_of_a_real_process(tmp_path):
+    log = tmp_path / "render.log"
+    with open(log, "w") as f:
+        p = subprocess.Popen(["sleep", "30"], stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT)
+    try:
+        got = model.open_files([p.pid, 2**22 + 7])  # a pid that is not there is skipped
+    finally:
+        p.kill()
+        p.wait()
+    real = os.path.realpath(log)
+    assert got == {p.pid: [(1, real), (2, real)]}
+    assert model.open_files([]) == {}
+
+
+def redirected(h, log_text: bytes | None, out_text: bytes = b""):
+    """A running background command whose current process writes to render.log, not to its .output."""
+    path, out_file = bg_session(h)
+    out_file.parent.mkdir(parents=True)
+    out_file.write_bytes(out_text)
+    log = h.root / "work" / "render.log"
+    if log_text is not None:
+        log.parent.mkdir(parents=True)
+        log.write_bytes(log_text)
+    w = model.SessionWatch("s-bg", path, model.load_sessions()["s-bg"])
+    w.redirects = {os.path.realpath(out_file): str(log)}
+    return w, out_file, log
+
+
+def test_last_line_of_the_file_the_command_writes_instead(claude_home):
+    h = claude_home
+    w, out_file, log = redirected(h, b"Fra: 19 | Saved\nFra: 20 | Rendering 25 / 64 samples\n")
+    w.poll()
+    (t,) = w.bg_tasks
+    assert t.log_path == str(log) and t.line == "Fra: 20 | Rendering 25 / 64 samples"
+    assert t.last_line == ""  # the .output itself is still empty
+
+    # whichever was written last: the command printed something to its .output after the log
+    out_file.write_bytes(b"150\n")
+    os.utime(log, (1, 1))
+    w.poll()
+    assert t.line == "150"
+
+    # the render is over: the next process writes to the .output again
+    os.utime(log, None)
+    w.redirects = {}
+    w.poll()
+    assert (t.log_path, t.log_line, t.line) == ("", "", "150")
+
+
+def test_log_is_forgotten_when_the_command_ends(claude_home):
+    h = claude_home
+    w, out_file, _ = redirected(h, b"Fra: 150 | Saved\n", out_text=b"")
+    w.poll()
+    assert w.bg_tasks[0].line == "Fra: 150 | Saved"
+    out_file.write_bytes(b"done\n")
+    h.jl(w.log.path, h.notify("bgA", "completed", h.ago(seconds=1), output=str(out_file)))
+    w.poll()
+    (t,) = w.bg_tasks
+    assert (t.status, t.log_path, t.line) == ("completed", "", "done")
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no named pipes")
+def test_log_that_is_not_a_regular_file_is_not_read(claude_home):
+    """A pipe in place of the log: opening it for reading must not block, and nothing is shown."""
+    h = claude_home
+    w, _, log = redirected(h, None)
+    log.parent.mkdir(parents=True)
+    os.mkfifo(log)
+    w.poll()
+    assert w.bg_tasks[0].line == ""
+
+
+OUT, LOG = "<out>", "<log>"
+
+
+@pytest.mark.parametrize(
+    ("files", "found"),
+    [
+        # `blender -b ... > render.log 2>&1`: the shell writes to the .output, the process it runs to the log
+        ({520: [(1, OUT), (2, OUT)], 522: [(1, LOG), (2, LOG)]}, True),
+        # `for ...; done > render.log 2>&1`: the shell redirects itself and keeps the .output on a spare descriptor
+        ({520: [(1, LOG), (2, LOG), (12, OUT), (14, OUT)], 522: [(1, LOG), (2, LOG)]}, True),
+        # the process writes to the .output; another file it writes (a video) is not its output
+        ({520: [(1, OUT), (2, OUT)], 522: [(1, OUT), (2, OUT), (5, "/w/video.mp4")]}, False),
+        # a shell that is not running this command (a foreground call has an .output of its own)
+        ({530: [(1, "/x/fg.output")], 531: [(1, LOG)]}, False),
+    ],
+)
+def test_tracker_finds_the_log_through_the_processes(claude_home, monkeypatch, files, found):
+    h = claude_home
+    _, out_file = bg_session(h, pid=500)
+    out_file.parent.mkdir(parents=True)
+    out_file.write_bytes(b"")
+    log = h.root / "work" / "render.log"
+    log.parent.mkdir(parents=True)
+    log.write_bytes(b"Fra: 7 | Rendering 1 / 64 samples\n")
+    t = table()
+    monkeypatch.setattr(model.ProcTable, "snapshot", classmethod(lambda cls: t))
+    names = {OUT: os.path.realpath(out_file), LOG: str(log)}
+    asked = []
+
+    def fake_open_files(pids):
+        asked.append(set(pids))
+        return {pid: [(fd, names.get(f, f)) for fd, f in fs] for pid, fs in files.items()}
+
+    monkeypatch.setattr(model, "open_files", fake_open_files)
+    tr = model.Tracker()
+    tr.scan()  # --once draws right after the first scan: the line must be there already
+    w = tr.watches["s-bg"]
+    assert asked == [{520, 522, 530, 531}]
+    assert w.redirects == ({os.path.realpath(out_file): str(log)} if found else {})
+    assert w.bg_tasks[0].line == ("Fra: 7 | Rendering 1 / 64 samples" if found else "")
+
+
+def test_no_lsof_without_running_background_commands(claude_home, monkeypatch):
+    h = claude_home
+    h.session("s-busy", status="busy", since_ms=h.ms_ago(seconds=5), pid=500)
+    h.transcript("s-busy", h.assistant(h.ago(seconds=5), "m1", [h.tool("Bash", "t1", command="pytest")]))
+    t = table()
+    monkeypatch.setattr(model.ProcTable, "snapshot", classmethod(lambda cls: t))
+    monkeypatch.setattr(model, "open_files", lambda pids: pytest.fail("lsof for a session without background commands"))
+    tr = model.Tracker()
+    tr.scan()
+    tr.poll()
+    assert tr.watches["s-busy"].redirects == {}

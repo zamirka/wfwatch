@@ -341,8 +341,8 @@ def bg_parts(s: SessionWatch, task: BgTask, at: datetime, with_proc: bool = True
     proc = s.current_proc if with_proc else None
     if proc is not None:
         parts.append((" · " + tr("bg.now", proc=proc.name, cpu=f"{proc.cpu:.0f}"), C.cyan))
-    if task.last_line:
-        parts.append((f" · «{task.last_line}»", C.dim))
+    if task.line:
+        parts.append((f" · «{task.line}»", C.dim))
     return parts
 
 
@@ -359,8 +359,8 @@ def bg_done_parts(task: BgTask, at: datetime) -> list[tuple[str, str]]:
         note = tr({"killed": "bg.killed", "failed": "bg.failed"}.get(task.status, "bg.done"))
     when = ago((at - task.ended).total_seconds()) if task.ended else ""
     parts = [(f"{icon} ", bold(color)), (task.description or task.task_id, C.text), (" · " + join(note, when), C.dim)]
-    if task.last_line:
-        parts.append((f" · «{task.last_line}»", C.dim))
+    if task.line:
+        parts.append((f" · «{task.line}»", C.dim))
     return parts
 
 

@@ -21,9 +21,11 @@ import json
 import math
 import os
 import re
+import shutil
+import stat
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
@@ -307,8 +309,20 @@ def describe_tool(name, inp) -> Action:
     if name == "Skill":
         return Action(name, _s(inp.get("skill")))
     if name.startswith("mcp__"):
-        return Action(name.split("__")[-1])
+        server, _, tool = name[5:].partition("__")
+        return Action(f"{mcp_server(server)} · {tool}" if server and tool else name.split("__")[-1])
     return Action(name)
+
+
+def mcp_server(name: str) -> str:
+    """The server part of an MCP tool name, without the prefixes Claude Code adds: plugin_<plugin>_<server>
+    (where the server is usually named after its plugin) and claude_ai_ for the connectors of claude.ai."""
+    for prefix in ("plugin_", "claude_ai_"):
+        if name.startswith(prefix) and len(name) > len(prefix):
+            name = name[len(prefix) :]
+            break
+    half = len(name) // 2
+    return name[:half] if len(name) % 2 and name[half] == "_" and name[:half] == name[half + 1 :] else name
 
 
 @dataclass
@@ -751,7 +765,11 @@ class ProcTable:
         return out
 
     def tool_processes(self, pid: int) -> list[Proc]:
-        """For each Bash tool shell of a session, its busiest leaf process; busiest first.
+        """For each Bash tool shell of a session, its busiest leaf process; busiest first."""
+        return sorted((leaf for _, leaf in self.tool_shells(pid)), key=lambda p: -p.cpu)
+
+    def tool_shells(self, pid: int) -> list[tuple[Proc, Proc]]:
+        """Each Bash tool shell of a session that runs something, with its busiest leaf process.
 
         Other children of the session (MCP servers and the like) are not tool shells and are skipped."""
         if pid <= 0:
@@ -767,8 +785,76 @@ class ProcTable:
             alive = {d.pid for d in live}
             leaves = [d for d in live if not any(k.pid in alive for k in self.kids.get(d.pid, ()))]
             if leaves:
-                out.append(max(leaves, key=lambda p: (p.cpu, p.elapsed)))
-        return sorted(out, key=lambda p: -p.cpu)
+                out.append((sh, max(leaves, key=lambda p: (p.cpu, p.elapsed))))
+        return out
+
+
+def open_files(pids: Iterable[int]) -> dict[int, list[tuple[int, str]]]:
+    """(descriptor, path) of the regular files these processes have open for writing, as the
+    system tells (/proc on Linux, lsof elsewhere): stdout and stderr show where a command sends its
+    output with `> file`. The paths come from the system, not from a transcript. Processes that
+    are gone are skipped."""
+    pids = sorted({p for p in pids if p > 0})
+    if not pids or sys.platform == "win32":
+        return {}
+    if os.path.isdir("/proc/self/fdinfo"):
+        return _proc_open_files(pids)
+    lsof = shutil.which("lsof") or "/usr/sbin/lsof"
+    try:
+        r = subprocess.run(
+            [lsof, "-w", "-a", "-p", ",".join(map(str, pids)), "-Fpfatn"],
+            capture_output=True,
+            timeout=5,
+            check=False,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
+    return parse_lsof(r.stdout.decode("utf-8", "replace"))  # exit code 1 when some of the processes are gone
+
+
+def parse_lsof(text: str) -> dict[int, list[tuple[int, str]]]:
+    """`lsof -F pfatn` output: pid -> (descriptor, path) of regular files open for writing (access w or u)."""
+    records: list[tuple[int, str, dict[str, str]]] = []
+    pid = 0
+    for line in text.splitlines():
+        key, val = line[:1], line[1:]
+        if key == "p":
+            pid = int(val) if val.isdigit() else 0
+        elif key == "f":
+            records.append((pid, val, {}))
+        elif key and records:
+            records[-1][2][key] = val
+    out: dict[int, list[tuple[int, str]]] = {}
+    for pid, fd, r in records:
+        name = r.get("n", "")
+        if pid and fd.isdigit() and r.get("t") == "REG" and r.get("a") in ("w", "u") and name.startswith("/"):
+            out.setdefault(pid, []).append((int(fd), name))
+    return out
+
+
+def _proc_open_files(pids: list[int]) -> dict[int, list[tuple[int, str]]]:
+    out: dict[int, list[tuple[int, str]]] = {}
+    for pid in pids:
+        try:
+            fds = sorted(int(fd) for fd in os.listdir(f"/proc/{pid}/fd") if fd.isdigit())
+        except OSError:
+            continue
+        for fd in fds:
+            link = f"/proc/{pid}/fd/{fd}"
+            try:
+                if not stat.S_ISREG(os.stat(link).st_mode):
+                    continue
+                with open(f"/proc/{pid}/fdinfo/{fd}", encoding="ascii", errors="replace") as f:
+                    flags = next((int(ln.split()[1], 8) for ln in f if ln.startswith("flags:")), 0)
+                if flags & (os.O_WRONLY | os.O_RDWR) == 0:  # open for reading only
+                    continue
+                path = os.readlink(link)
+            except (OSError, ValueError, IndexError):
+                continue
+            if path.startswith("/"):
+                out.setdefault(pid, []).append((fd, path))
+    return out
 
 
 def pid_alive(pid: int, started_at: datetime | None = None, procs: ProcTable | None = None) -> bool:
@@ -1020,8 +1106,19 @@ class BgTask:
     output_mtime: datetime | None = None
     output_size: int = 0
     exit_code: int | None = None
+    # a file of its own the running command writes to (`> render.log 2>&1`), as the system tells
+    log_path: str = ""
+    log_line: str = ""
+    log_mtime: datetime | None = None
     _output_key: tuple = field(default=(), repr=False, compare=False)
+    _log_key: tuple = field(default=(), repr=False, compare=False)
     _final: bool = field(default=False, repr=False, compare=False)
+
+    @property
+    def line(self) -> str:
+        """The last line of whichever was written last: the .output or the file of its own."""
+        newer = self.log_mtime is not None and (self.output_mtime is None or self.log_mtime >= self.output_mtime)
+        return self.log_line if self.log_line and (newer or not self.last_line) else self.last_line
 
     def elapsed(self, at: datetime) -> float:
         if not self.started:
@@ -1180,10 +1277,17 @@ _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|
 
 
 def last_output_line(path: Path, max_bytes: int = 8192) -> tuple[str, int, datetime] | None:
-    """(last non-empty line without ANSI sequences, size, mtime) of a command output file."""
+    """(last non-empty line without ANSI sequences, size, mtime) of a command output file.
+    Only a regular file is read: a pipe in its place must not block (hence O_NONBLOCK)."""
     try:
-        st = path.stat()
-        with open(path, "rb") as f:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except (OSError, ValueError):
+        return None
+    try:
+        with os.fdopen(fd, "rb") as f:
+            st = os.fstat(f.fileno())
+            if not stat.S_ISREG(st.st_mode):
+                return None
             if st.st_size > max_bytes:
                 f.seek(st.st_size - max_bytes)
             data = f.read(max_bytes)
@@ -1507,6 +1611,8 @@ class SessionWatch:
         self.subagents: dict[Path, Agent] = {}
         self.events: list[Event] = []
         self.procs: list[Proc] = []  # what its Bash tool shells are running now, busiest first
+        # .output of a running background command (real path) -> the file its current process writes to instead
+        self.redirects: dict[str, str] = {}
         self.cwd = ""
         self.error = ""
 
@@ -1571,7 +1677,7 @@ class SessionWatch:
             self._event(ts, self.main.label, action)
         self._poll_subagents()
         self.log.poll()
-        self._poll_bg()
+        self.poll_bg()
 
     def _see_cwd(self, cwd: str) -> None:
         self.cwd = self.cwd or cwd
@@ -1605,14 +1711,15 @@ class SessionWatch:
                     self._event(ts, a.label, action)
                 a.status = RUNNING if fresh else DONE
 
-    def _poll_bg(self) -> None:
+    def poll_bg(self) -> None:
+        """Background commands: started, finished, their last output line."""
         proc_start = self.info.started_at
         for t in self.log.bg.values():
             if t.status == RUNNING and proc_start and t.started and t.started < proc_start:
                 t.status = STALE  # started by an earlier process of this session: no notification will come
             if t._final:
                 continue
-            path = Path(t.output_path) if t.output_path else self.output_path(t.task_id)
+            path = self.bg_output(t)
             try:
                 if not output_allowed(path):  # a task id is data too: "../" in it must lead nowhere
                     raise ValueError(path)
@@ -1625,7 +1732,31 @@ class SessionWatch:
                 if got:
                     t.last_line, t.output_size, t.output_mtime = got
                 t._output_key = key
+            self._poll_log(t, os.path.realpath(path) if key and t.status == RUNNING and self.redirects else "")
             t._final = t.status != RUNNING
+
+    def _poll_log(self, t: BgTask, output: str) -> None:
+        """The last line of the file the running command writes to instead of its .output (`output`,
+        a real path; "" when the command is over). Which file that is the Tracker learns from the system."""
+        log = self.redirects.get(output, "") if output else ""
+        if log != t.log_path:
+            t.log_path, t.log_line, t.log_mtime, t._log_key = log, "", None, ()
+        if not log:
+            return
+        try:
+            st = os.stat(log)
+            key = (st.st_size, st.st_mtime)
+        except (OSError, ValueError):
+            return
+        if key != t._log_key:
+            got = last_output_line(Path(log))
+            if got:
+                t.log_line, _, t.log_mtime = got
+            t._log_key = key
+
+    def bg_output(self, t: BgTask) -> Path:
+        """The .output of a background command: as the transcript gave it, or where it should be."""
+        return Path(t.output_path) if t.output_path else self.output_path(t.task_id)
 
     def output_path(self, task_id: str) -> Path:
         """Where Claude Code writes the output of a background command."""
@@ -1764,6 +1895,32 @@ class Tracker:
         for sid, w in self.watches.items():
             info = self.sessions.get(sid)
             w.procs = self.procs.tool_processes(info.pid) if self.procs is not None and info else []
+        self._find_redirects()
+
+    def _find_redirects(self) -> None:
+        """Where running background commands send their output when not to their .output
+        (`blender -b scene.blend -a > render.log 2>&1`): the shell of such a command has its .output
+        open (on stdout, or on a spare descriptor when the shell itself redirects: `for ...; done > log`),
+        the process it runs now writes its stdout or stderr to a file of its own. The system is asked
+        (open_files) only about the sessions that run background commands."""
+        shells: dict[str, list[tuple[Proc, Proc]]] = {}
+        for sid, w in self.watches.items():
+            info = self.sessions.get(sid)
+            if self.procs is not None and info and w.running_bg_tasks():
+                shells[sid] = self.procs.tool_shells(info.pid)
+        pids = {p.pid for pairs in shells.values() for pair in pairs for p in pair}
+        files = open_files(pids) if pids else {}
+        for sid, w in self.watches.items():
+            redirects: dict[str, str] = {}
+            outputs = {os.path.realpath(w.bg_output(t)) for t in w.running_bg_tasks()} if sid in shells else set()
+            for sh, leaf in shells.get(sid, ()):
+                mine = {os.path.realpath(f) for _, f in files.get(sh.pid, ())} & outputs
+                own = [f for fd, f in files.get(leaf.pid, ()) if fd in (1, 2) and os.path.realpath(f) not in outputs]
+                if mine and own:
+                    redirects.update(dict.fromkeys(mine, own[0]))
+            if redirects != w.redirects:
+                w.redirects = redirects
+                self.guard(w, w.poll_bg)  # --once draws right after the scan
 
     def _maybe_background(self, sid: str, info: SessionInfo, at: datetime) -> bool:
         """An idle session may still run background commands: its Bash tool shells are alive

@@ -147,10 +147,25 @@ def test_parse_ts_naive_is_utc():
 def test_describe_tool():
     assert model.describe_tool("Edit", {"file_path": "/a/b/c/d.py"}) == Action("Edit", "c/d.py")
     assert model.describe_tool("Bash", {"command": "ls -la", "description": ""}) == Action("Bash", "ls -la")
-    assert model.describe_tool("mcp__srv__do_thing", {}) == Action("do_thing")
+    assert model.describe_tool("mcp__srv__do_thing", {}) == Action("srv · do_thing")
     assert model.describe_tool("Task", {"description": "Explore"}) == Action("Agent", "Explore")
     assert model.describe_tool(5, "x") == Action("5")
     assert model.describe_tool("Read", {"file_path": ["x"]}) == Action("Read")
+
+
+@pytest.mark.parametrize(
+    ("name", "shown"),
+    [
+        ("mcp__blender__execute_blender_code", "blender · execute_blender_code"),
+        ("mcp__plugin_playwright_playwright__browser_click", "playwright · browser_click"),  # plugin X, server X
+        ("mcp__plugin_engineering_datadog__query", "engineering_datadog · query"),
+        ("mcp__claude_ai_Claude_Docs__batch", "Claude_Docs · batch"),
+        ("mcp__obsidian-vault__obsidian_get_file", "obsidian-vault · obsidian_get_file"),
+        ("mcp__lonely", "lonely"),  # no tool part: as before
+    ],
+)
+def test_mcp_tool_shows_its_server(name, shown):
+    assert model.describe_tool(name, {}) == Action(shown)
 
 
 def test_actions_in_words():

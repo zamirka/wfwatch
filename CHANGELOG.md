@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-28
+
 ### Added
 
 - A background command that sends its output to a file of its own
@@ -76,6 +78,7 @@ Claude Code 2.1.311.
   is restored after `q`, Ctrl+C, SIGTERM and SIGHUP.
 - `--version` and `python -m wfwatch`.
 
-[Unreleased]: https://github.com/zamirka/wfwatch/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/zamirka/wfwatch/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/zamirka/wfwatch/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/zamirka/wfwatch/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/zamirka/wfwatch/releases/tag/v0.1.0

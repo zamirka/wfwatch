@@ -105,7 +105,36 @@ def test_tail_missing_and_tail_only(tmp_path):
     p = tmp_path / "big.jsonl"
     p.write_text("".join(f'{{"n": {i}}}\n' for i in range(1000)), encoding="utf-8")
     got = model.Tail(p, last_bytes=100).read()
-    assert got and got[-1] == {"n": 999} and len(got) < 20  # only the tail; its cut first line is skipped
+    assert got and got[-1] == {"n": 999} and len(got) < 20  # only the tail, from the start of a line
+
+
+def small(i: int) -> bytes:
+    return b'{"n": %d, "pad": "%s"}\n' % (i, b"x" * 40)
+
+
+def test_tail_window_does_not_count_huge_lines(tmp_path):
+    """An image a tool returned (a line of a megabyte) must not push the recent history out of the window."""
+    p = tmp_path / "big.jsonl"
+    p.write_bytes(b"".join(small(i) for i in range(100)) + b'{"img": "%s"}\n' % (b"A" * 300_000) + small(100))
+    t = model.Tail(p, last_bytes=2000)
+    lines = list(t.lines())
+    assert all(ln.startswith(b"{") and ln.endswith(b"}") for ln in lines)  # whole lines only
+    ns = [d["n"] for d in map(model._loads, lines) if "n" in d]
+    assert ns[-1] == 100 and ns == list(range(ns[0], 101)) and 25 <= len(ns) <= 40  # ~2000 bytes of small lines
+    assert sum(1 for ln in lines if ln.startswith(b'{"img"')) == 1
+
+
+def test_tail_look_back_is_limited(tmp_path, monkeypatch):
+    monkeypatch.setattr(model.Tail, "BIG_LINE", 1000)
+    monkeypatch.setattr(model.Tail, "LOOK_BACK", 50_000)
+    monkeypatch.setattr(model.Tail, "CHUNK", 333)  # lines span chunks, also when looking back
+    p = tmp_path / "big.jsonl"
+    huge = b'{"img": "%s"}\n' % (b"A" * 10_000)
+    p.write_bytes(b"".join(small(i) for i in range(100)) + huge * 10 + small(100) + small(101))
+    lines = list(model.Tail(p, last_bytes=2000).lines())
+    assert all(ln.startswith(b"{") and ln.endswith(b"}") for ln in lines)  # it starts at a line, not inside one
+    assert [model._loads(ln).get("n") for ln in lines[-2:]] == [100, 101]
+    assert 4 <= len(lines) - 2 <= 5 and all(ln.startswith(b'{"img"') for ln in lines[:-2])  # 50 000 bytes back
 
 
 def test_tail_needles_and_chunks(tmp_path, monkeypatch):
@@ -467,6 +496,44 @@ def test_session_events_are_ordered_by_time(claude_home):
     )
     w.poll()
     assert [e.action.arg for e in w.events] == ["a/old50.py", "a/old40.py", "a/old30.py", "a/newest.py"]
+
+
+def test_session_history_before_a_screenshot(claude_home):
+    """blender-mcp `look` returns a screenshot: a line of a megabyte. The calls before it are still shown."""
+    h = claude_home
+    h.session("s1")
+    path = h.transcript(
+        "s1",
+        h.assistant(h.ago(seconds=50), "m1", [h.tool("mcp__blender__execute_blender_code", "t1", code="import bpy")]),
+        {
+            "type": "user",
+            "timestamp": h.ago(seconds=49),
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]},
+        },
+        h.assistant(h.ago(seconds=40), "m2", [h.tool("mcp__blender__look", "t2")]),
+        {
+            "type": "user",
+            "timestamp": h.ago(seconds=39),
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t2",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {"type": "base64", "media_type": "image/png", "data": "A" * 1_000_000},
+                            }
+                        ],
+                    }
+                ]
+            },
+        },
+        h.assistant(h.ago(seconds=30), "m3", [h.text("The scene is open on frame 112.")]),
+    )
+    w = model.SessionWatch("s1", path, model.load_sessions()["s1"])
+    w.poll()
+    assert [e.action.tool for e in w.events] == ["blender · execute_blender_code", "blender · look"]
 
 
 def test_project_from_slug(tmp_path, monkeypatch):

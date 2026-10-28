@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - An output file that is not a regular file (a named pipe) is not read: opening it could block.
+- The recent actions of a session no longer vanish behind a screenshot. Of a long transcript only
+  its last 512 KB are read at first; a tool that returns an image (blender-mcp `look`, a browser
+  screenshot) writes a line of a megabyte, which filled that window alone. Lines over 64 KB no
+  longer count toward it, and it reaches 8 MB back at most.
 
 ## [0.1.1] - 2026-10-28
 

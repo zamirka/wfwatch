@@ -148,6 +148,8 @@ class Tail:
     can drop what it derived from the old content (and clear the flag)."""
 
     CHUNK = 1 << 20  # read big files piecewise, never whole
+    BIG_LINE = 64 << 10  # a longer line (an image a tool returned) does not count toward last_bytes
+    LOOK_BACK = 8 << 20  # how far from the end the window of last_bytes may reach
 
     def __init__(
         self, path: Path, needles: tuple[bytes, ...] = (), last_bytes: int = 0, skip_prefixes: tuple[bytes, ...] = ()
@@ -155,12 +157,11 @@ class Tail:
         self.path = path
         self.needles = needles  # if set, only lines containing one of them are returned
         self.skip_prefixes = skip_prefixes  # lines starting with these are never returned
-        self.last_bytes = last_bytes  # > 0: start with only the tail of a long file
+        self.last_bytes = last_bytes  # > 0: start with only the tail of a long file (see _window_start)
         self.offset = 0
         self.reset = False
         self._ino: int | None = None
         self._buf = b""
-        self._skip_partial = False  # the first line after a seek into the middle is cut
         self._dropping = False  # inside a long skipped line: discard up to the next newline
 
     def lines(self) -> Iterator[bytes]:
@@ -170,19 +171,19 @@ class Tail:
         except (OSError, ValueError):
             return
         if self._ino is not None and (st.st_ino != self._ino or st.st_size < self.offset):
-            self.offset, self._buf, self._skip_partial, self._dropping, self.reset = 0, b"", False, False, True
+            self.offset, self._buf, self._dropping, self.reset = 0, b"", False, True
         self._ino = st.st_ino
         size = st.st_size
         if size <= self.offset:
             return
-        if self.offset == 0 and self.last_bytes and size > self.last_bytes:
-            self.offset, self._skip_partial = size - self.last_bytes, True
         try:
             f = open(self.path, "rb")  # noqa: SIM115 – the generator keeps it open between chunks
         except (OSError, ValueError):
             return
         with f:
             try:
+                if self.offset == 0 and self.last_bytes and size > self.last_bytes:
+                    self.offset = self._window_start(f, size)
                 f.seek(self.offset)
             except OSError:
                 return
@@ -201,14 +202,32 @@ class Tail:
                     chunk, self._dropping = chunk[k + 1 :], False
                 data = self._buf + chunk if self._buf else chunk
                 end = data.rfind(b"\n")  # data[:end] holds complete lines
-                start = 0
-                if end >= 0 and self._skip_partial:
-                    start, self._skip_partial = data.find(b"\n") + 1, False
                 self._buf = data[end + 1 :] if end >= 0 else data
                 if self.skip_prefixes and len(self._buf) > 65536 and self._buf.startswith(self.skip_prefixes):
                     self._buf, self._dropping = b"", True
-                if end > start:
-                    yield from self._split(data, start, end)
+                if end > 0:
+                    yield from self._split(data, 0, end)
+
+    def _window_start(self, f, size: int) -> int:
+        """Where a long file is first read from: the start of the line from which the lines to the
+        end hold last_bytes. Lines longer than BIG_LINE do not count, so that a few images returned
+        by a tool cannot push the recent history out of the window; it reaches LOOK_BACK at most."""
+        limit = max(0, size - self.LOOK_BACK)
+        budget, line_end, pos = self.last_bytes, size, size
+        while pos > limit:
+            n = min(self.CHUNK, pos - limit)
+            pos -= n
+            f.seek(pos)
+            chunk = f.read(n)
+            i = len(chunk)
+            while (i := chunk.rfind(b"\n", 0, i)) >= 0:
+                start = pos + i + 1
+                if line_end - start <= self.BIG_LINE:
+                    budget -= line_end - start
+                    if budget <= 0:
+                        return start
+                line_end = start
+        return line_end if limit else 0
 
     def _split(self, data: bytes, start: int, end: int) -> Iterator[bytes]:
         """Lines of data[start:end]. With needles, only the matching lines are cut out (a long

@@ -34,6 +34,7 @@ from pathlib import Path
 
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
 CLAUDE_TMP = Path("/tmp")  # Claude Code keeps background task output in /tmp/claude-<uid>/...
+PROC = Path("/proc")  # Linux
 DEBUG = False  # --debug: let unexpected errors propagate instead of recording them
 
 RUNNING, DONE, FAILED, STALE, PENDING = "running", "done", "failed", "stale", "pending"
@@ -877,14 +878,31 @@ def _proc_open_files(pids: list[int]) -> dict[int, list[tuple[int, str]]]:
     return out
 
 
-def pid_alive(pid: int, started_at: datetime | None = None, procs: ProcTable | None = None) -> bool:
+def proc_start_ticks(pid: int) -> int | None:
+    """When a process started, in clock ticks since boot: field 22 of /proc/<pid>/stat. The process
+    name in field 2 may hold anything, so the fields are counted from the bracket that closes it."""
+    try:
+        line = (PROC / str(pid) / "stat").read_bytes()
+        return int(line[line.rindex(b")") + 1 :].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def pid_alive(
+    pid: int, started_at: datetime | None = None, procs: ProcTable | None = None, proc_start: object = None
+) -> bool:
     """Is the session process still there? With a ps snapshot, a process that started after the
-    session wrote its record is someone else on a reused pid."""
+    session wrote its record is someone else on a reused pid. The times of ps drift forward by as
+    long as the host slept (WSL2), so `proc_start` of the record is asked first: on Linux it is a
+    tick count, and the same count means the same process, whatever the clocks say."""
     if pid <= 0:
         return False
     if procs is not None:
         if procs.get(pid) is None:
             return False
+        ticks = _int(proc_start)
+        if ticks and ticks == proc_start_ticks(pid):
+            return True
         st = procs.started(pid)
         return not (started_at is not None and st is not None and st > started_at.timestamp() + PID_SLACK_SEC)
     if sys.platform == "win32":
@@ -947,7 +965,7 @@ class SessionInfo:
             session_id=_s(d.get("sessionId")),
             name=_s(d.get("name")),
             pid=pid,
-            alive=pid_alive(pid, started, procs),
+            alive=pid_alive(pid, started, procs, d.get("procStart")),
             status=_s(d.get("status")),
             cwd=_s(d.get("cwd")),
             since=_ms(d.get("statusUpdatedAt")),
@@ -967,7 +985,7 @@ class SessionInfo:
 
 
 def _parse_lstart(v) -> datetime | None:
-    """`procStart` is ps lstart in UTC, e.g. 'Wed Oct 14 19:23:06 2026'."""
+    """`procStart` is ps lstart in UTC on macOS, e.g. 'Wed Oct 14 19:23:06 2026' (a tick count on Linux)."""
     if not isinstance(v, str):
         return None
     try:

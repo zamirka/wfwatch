@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resumed after a notification runs again. It is marked done when the notification comes, not 90
   seconds later, and its time counts from the launch, however long its transcript is.
 - A session with a running background agent stays in the overview, however long it has been silent.
+- A live session no longer looks closed after the host slept. On WSL2 `ps` then says a process
+  started hours later than it did, which looked like a reused process id. On Linux the process is
+  now recognized by its start in clock ticks, the same in `/proc` and in the session record, and
+  the times are compared only when these two differ or are not there.
 
 ## [0.2.0] - 2026-10-28
 

@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import timedelta
 
 import pytest
 
@@ -57,14 +58,71 @@ def test_tool_processes():
 def test_pid_reuse_is_detected():
     t = table()
     at = model.now()
-    from datetime import timedelta
-
     assert model.pid_alive(500, at - timedelta(hours=2), t)  # started 2 h ago, registered right after
     assert not model.pid_alive(600, at - timedelta(days=2), t)  # the session died; pid 600 is someone else now
     assert not model.pid_alive(4242, None, t)  # not running at all
     assert model.pid_alive(600, None, t)
     assert not model.pid_alive(0) and not model.pid_alive(-5) and not model.pid_alive(2**40)
     assert model.pid_alive(os.getpid())
+
+
+def fake_proc(monkeypatch, root, pid, ticks, comm="claude"):
+    """/proc/<pid>/stat as Linux has it: the start time is field 22."""
+    (root / str(pid)).mkdir()
+    fields = ["S", *"0" * 18, str(ticks), "0", "0"]
+    (root / str(pid) / "stat").write_text(f"{pid} ({comm}) {' '.join(fields)}\n", encoding="utf-8")
+    monkeypatch.setattr(model, "PROC", root)
+
+
+def test_session_outlives_the_drift_of_ps_after_the_host_slept(tmp_path, monkeypatch):
+    """WSL2: after a sleep ps says a process started hours after it did, as if the pid were reused.
+    The tick count Claude Code keeps in `procStart` there does not drift."""
+    fake_proc(monkeypatch, tmp_path, 600, 176963)
+    started_ms = int((model.now() - timedelta(hours=11)).timestamp() * 1000)
+    record = {"pid": 600, "sessionId": "s1", "startedAt": started_ms, "procStart": "176963"}
+    assert model.SessionInfo.from_record(record, "600", table()).alive
+    assert not model.SessionInfo.from_record({**record, "procStart": None}, "600", table()).alive
+
+
+def test_another_tick_count_leaves_it_to_the_times(tmp_path, monkeypatch):
+    fake_proc(monkeypatch, tmp_path, 600, 999999)
+    assert not model.pid_alive(600, model.now() - timedelta(days=2), table(), "176963")  # pid 600 was reused
+    assert model.pid_alive(600, model.now() - timedelta(seconds=40), table(), "176963")
+
+
+@pytest.mark.parametrize("proc_start", ["Wed Oct 28 21:11:54 2026", "", None, "0", True])
+def test_proc_start_that_is_no_tick_count_proves_nothing(tmp_path, monkeypatch, proc_start):
+    """It is a date on macOS. A process with a count of 0 in /proc must not match "no count"."""
+    fake_proc(monkeypatch, tmp_path, 600, 0)
+    assert not model.pid_alive(600, model.now() - timedelta(days=2), table(), proc_start)
+
+
+def test_tick_count_without_proc(tmp_path, monkeypatch):
+    monkeypatch.setattr(model, "PROC", tmp_path)
+    assert not model.pid_alive(600, model.now() - timedelta(days=2), table(), "176963")
+
+
+@pytest.mark.parametrize(
+    ("comm", "ticks"),
+    [("claude", 176963), ("tmux: server", 176963), ("a) b (c)", 176963), ("(", 42)],
+)
+def test_start_ticks_whatever_the_process_is_called(tmp_path, monkeypatch, comm, ticks):
+    fake_proc(monkeypatch, tmp_path, 600, ticks, comm)
+    assert model.proc_start_ticks(600) == ticks
+
+
+@pytest.mark.parametrize("text", ["", "600 (claude", "600 (claude) S 0 0", "600 (claude) " + "x " * 30])
+def test_start_ticks_of_a_broken_stat_file(tmp_path, monkeypatch, text):
+    (tmp_path / "600").mkdir()
+    (tmp_path / "600" / "stat").write_text(text, encoding="utf-8")
+    monkeypatch.setattr(model, "PROC", tmp_path)
+    assert model.proc_start_ticks(600) is None
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="no /proc")
+def test_start_ticks_of_a_real_process():
+    out = subprocess.run(["cut", "-d", " ", "-f", "22", f"/proc/{os.getpid()}/stat"], capture_output=True, check=True)
+    assert model.proc_start_ticks(os.getpid()) == int(out.stdout)
 
 
 def bg_session(h, sid="s-bg", status="idle", since_ms=None, output=True, launched_min=5, started_ms=None, pid=None):

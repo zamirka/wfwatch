@@ -938,6 +938,7 @@ def _win_pid_alive(pid: int) -> bool:  # pragma: no cover – Windows only; os.k
 # ---- session registry ----
 
 ACTIVE_STATUSES = (BUSY, WAITING)  # the session works or waits for the user
+SHELL = "shell"  # no turn is running, but a background command is alive
 # the registry status can get stuck: a session listed as busy while its history has been silent for a day
 QUIET_MAX = {BUSY: 3600, WAITING: 3 * 3600}
 IDLE_KEEP_SEC = 15 * 60  # a session that just went idle is still shown: it is probably being worked with
@@ -951,7 +952,7 @@ class SessionInfo:
     name: str = ""
     pid: int = 0
     alive: bool = False
-    status: str = ""  # busy | waiting | idle
+    status: str = ""  # busy | waiting | idle | shell
     cwd: str = ""
     since: datetime | None = None  # when the status last changed
     entrypoint: str = ""  # cli, claude-vscode, ...
@@ -980,8 +981,8 @@ class SessionInfo:
         return self.status == IDLE and self.since is not None and (at - self.since).total_seconds() < IDLE_KEEP_SEC
 
     def recently_active(self, at: datetime) -> bool:
-        """Works, waits for the user, or went idle a moment ago."""
-        return self.status in ACTIVE_STATUSES or self.idle_recently(at)
+        """Works, waits for the user, runs a background command, or went idle a moment ago."""
+        return self.status in (*ACTIVE_STATUSES, SHELL) or self.idle_recently(at)
 
 
 def _parse_lstart(v) -> datetime | None:
@@ -1701,7 +1702,7 @@ class SessionWatch:
 
     @property
     def status(self) -> str:
-        """Registry status: busy | waiting | idle."""
+        """Registry status: busy | waiting | idle | shell."""
         return self.info.status
 
     @property
@@ -1709,7 +1710,7 @@ class SessionWatch:
         """What to show: busy | waiting | background (idle, but a background command or agent runs) | idle."""
         if self.status in ACTIVE_STATUSES:
             return self.status
-        return BACKGROUND if self.running_bg_tasks() or self.bg_agents else IDLE
+        return BACKGROUND if self.in_background() else IDLE
 
     @property
     def since(self) -> datetime | None:
@@ -1729,6 +1730,11 @@ class SessionWatch:
 
     def running_bg_tasks(self) -> list[BgTask]:
         return [t for t in self.log.bg.values() if t.status == RUNNING]
+
+    def in_background(self) -> bool:
+        """A background command or agent runs. The registry also knows of commands that the transcript
+        does not tell of as background ones (a Monitor)."""
+        return self.status == SHELL or bool(self.running_bg_tasks()) or bool(self.bg_agents)
 
     def recent_bg_tasks(self, at: datetime | None = None, within: float = IDLE_KEEP_SEC) -> list[BgTask]:
         """Running background commands and those finished within the last `within` seconds."""
@@ -1866,14 +1872,14 @@ class SessionWatch:
         """Show in the overview: a background command or agent runs; or it works or waits (and is not
         stuck); or it went idle a moment ago."""
         at = at or now()
-        if self.running_bg_tasks() or self.bg_agents:
+        if self.in_background():
             return True
         if self.status in ACTIVE_STATUSES:
             return self.quiet_sec(at) < QUIET_MAX[self.status]
         return self.info.idle_recently(at)
 
     def animating(self) -> bool:
-        return self.status == BUSY or bool(self.running_subagents()) or bool(self.running_bg_tasks())
+        return self.status == BUSY or bool(self.running_subagents()) or self.in_background()
 
     def running_subagents(self) -> list[Agent]:
         return [a for a in self.subagents.values() if a.status == RUNNING]

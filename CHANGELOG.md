@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A session running a background command that wfwatch does not find in its transcript, such as a
+  Monitor, no longer vanishes from the overview. Claude Code gives such a session the status
+  `shell`, which wfwatch did not know: the session looked idle and was not listed at all. It now
+  shows as "◐ background task" while the status holds, only without the command.
+
 ## [0.2.1] - 2026-10-30
 
 ### Fixed

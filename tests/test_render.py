@@ -529,6 +529,18 @@ def test_overview_keeps_a_silent_background_agent(claude_home):
     assert "Fix chapter 1" in out and "Bash Render chapter 1" in out and "1 subagent" in out
 
 
+def test_session_running_an_unknown_background_command_is_drawn(claude_home):
+    """Status "shell" with nothing to show about the command: the overview and the session still work."""
+    h = claude_home
+    h.session("s-mon", name="deploy", status="shell", since_ms=h.ms_ago(hours=5))
+    h.transcript("s-mon", h.assistant(h.ago(hours=5), "m1", [h.tool("Monitor", "toolu_M", description="Wait for CI")]))
+    app = App(tracker(), expand_all=False)
+    assert "deploy" in (out := render(app.snapshot())) and "◐ background task" in out
+    app.open("s-mon")
+    for w, h_ in ((80, 24), (120, 40), (200, 60)):
+        assert "◐ background task" in render(app.frame(h_), w, h_)
+
+
 def test_agent_colors_are_kept_across_frames_and_screens(busy_home):
     h, run = busy_home
     tr = tracker()

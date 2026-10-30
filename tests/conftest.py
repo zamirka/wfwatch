@@ -120,6 +120,30 @@ class Home:
         return r
 
     @staticmethod
+    def agent_launch(agent_id: str, ts: str, description: str = "", tool_id: str = "toolu_A") -> dict:
+        """The result of an Agent call that went to the background."""
+        return {
+            "type": "user",
+            "timestamp": ts,
+            "toolUseResult": {
+                "isAsync": True,
+                "status": "async_launched",
+                "agentId": agent_id,
+                "description": description,
+                "prompt": "Fix it",
+                "resolvedModel": "claude-opus-5-5",
+                "outputFile": f"/tmp/claude-501/-p/s/tasks/{agent_id}.output",
+                "canReadOutputFile": True,
+                "canContinueAgent": True,
+            },
+            "message": {
+                "content": [
+                    {"type": "tool_result", "tool_use_id": tool_id, "content": "Async agent launched successfully."}
+                ]
+            },
+        }
+
+    @staticmethod
     def notify(task_id: str, status: str, ts: str, summary: str = "", output: str = "") -> dict:
         body = f"<task-notification>\n<task-id>{task_id}</task-id>\n"
         if output:

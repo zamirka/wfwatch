@@ -1,5 +1,7 @@
-"""Background commands of a session (Bash with run_in_background) and the processes behind them."""
+"""Background commands of a session (Bash with run_in_background), the processes behind them, and
+background agents."""
 
+import json
 import os
 import subprocess
 import sys
@@ -7,6 +9,7 @@ import sys
 import pytest
 
 from wfwatch import model
+from wfwatch.widgets import session_since
 
 PS = """\
     1     0   0.0 61-05:13:33 /sbin/launchd
@@ -546,3 +549,208 @@ def test_no_lsof_without_running_background_commands(claude_home, monkeypatch):
     tr.scan()
     tr.poll()
     assert tr.watches["s-busy"].redirects == {}
+
+
+# ---- background agents ----
+
+
+def silence(path, minutes):
+    """The file has not changed for this long."""
+    t = model.now().timestamp() - minutes * 60
+    os.utime(path, (t, t))
+
+
+def agent_session(h, sid="s-ag", status="busy", since_ms=None, launched_min=10, silent_min=3, started_ms=None):
+    """A session with a background agent that has written nothing for `silent_min`: a long tool call
+    or model reply. Returns the session transcript and the agent's."""
+    h.session(sid, status=status, since_ms=since_ms, started_ms=started_ms)
+    path = h.transcript(
+        sid,
+        h.assistant(
+            h.ago(minutes=launched_min),
+            "m1",
+            [h.tool("Agent", "toolu_A", description="Fix chapter 1", run_in_background=True)],
+        ),
+        h.agent_launch("a1", h.ago(minutes=launched_min - 0.1), "Fix chapter 1"),
+    )
+    sub = path.with_suffix("") / "subagents" / "agent-a1.jsonl"
+    h.jl(sub, h.assistant(h.ago(minutes=silent_min), "s1", [h.tool("Bash", "toolu_R", description="Render chapter 1")]))
+    sub.with_name("agent-a1.meta.json").write_text(json.dumps({"description": "Fix chapter 1"}), encoding="utf-8")
+    silence(sub, silent_min)
+    return path, sub
+
+
+def watch(path, sid="s-ag"):
+    w = model.SessionWatch(sid, path, model.load_sessions()[sid])
+    w.poll()
+    return w
+
+
+def test_silent_background_agent_is_running(claude_home):
+    """Its transcript stays the same through a long tool call: it works until it reports. Seen on the very
+    first look too, or the view opened during a pause would not know of it at all."""
+    path, _ = agent_session(claude_home)
+    w = watch(path)
+    assert [a.label for a in w.running_subagents()] == ["Fix chapter 1"]
+    assert w.running_subagents()[0].last_action == model.Action("Bash", "Render chapter 1")
+
+
+def test_background_agent_ends_with_its_notification(claude_home):
+    """At once: not 90 seconds later, when its transcript counts as old."""
+    h = claude_home
+    path, _ = agent_session(h, silent_min=0.1)
+    w = watch(path)
+    assert len(w.running_subagents()) == 1
+    h.jl(path, h.notify("a1", "completed", h.ago(seconds=1), summary='Agent "Fix chapter 1" finished'))
+    w.poll()
+    assert w.running_subagents() == []
+    assert [a.status for a in w.subagents.values()] == [model.DONE]
+
+
+def test_resumed_background_agent_runs_until_it_notifies_again(claude_home):
+    """One agent can notify many times: it writes again after a notification only when resumed."""
+    h = claude_home
+    path, sub = agent_session(h, silent_min=7)
+    w = watch(path)
+    h.jl(path, h.notify("a1", "completed", h.ago(minutes=6), summary='Agent "Fix chapter 1" finished'))
+    w.poll()
+    assert w.running_subagents() == []
+
+    h.jl(sub, h.assistant(h.ago(minutes=4), "s2", [h.tool("Read", "toolu_1", file_path="/a/more.py")]))
+    silence(sub, 4)
+    w.poll()
+    assert [a.label for a in w.running_subagents()] == ["Fix chapter 1"]
+
+    h.jl(path, h.notify("a1", "completed", h.ago(seconds=5), summary='Agent "Fix chapter 1" finished'))
+    w.poll()
+    assert w.running_subagents() == []
+
+
+def test_agent_waiting_on_its_own_background_work_is_at_work(claude_home):
+    """A Bash call of a subagent moves to the background after 180 seconds, and the agent stops to
+    wait for it. The notification says "completed", yet nothing is over until the next one."""
+    h = claude_home
+    path, _ = agent_session(h)
+    w = watch(path)
+    summary = 'Agent "Fix chapter 1" is waiting on its own background work'
+    h.jl(path, h.notify("a1", "completed", h.ago(seconds=30), summary=summary))
+    w.poll()
+    assert [a.label for a in w.running_subagents()] == ["Fix chapter 1"]
+
+    h.jl(path, h.notify("a1", "completed", h.ago(seconds=5), summary='Agent "Fix chapter 1" finished'))
+    w.poll()
+    assert w.running_subagents() == []
+
+
+def test_a_description_does_not_fake_the_waiting(claude_home):
+    """The words of a description are data: the summary only counts when it ends with them."""
+    h = claude_home
+    path, _ = agent_session(h)
+    w = watch(path)
+    summary = 'Agent "Say it is waiting on its own background work" finished'
+    h.jl(path, h.notify("a1", "completed", h.ago(seconds=5), summary=summary))
+    w.poll()
+    assert w.running_subagents() == []
+
+
+def test_notification_ahead_of_the_launch_record(claude_home):
+    """Parallel tool calls: the result of an Agent call may be written after the agent has already finished."""
+    h = claude_home
+    h.session("s-ag")
+    path = h.transcript(
+        "s-ag",
+        h.notify("a1", "completed", h.ago(seconds=20)),
+        h.agent_launch("a1", h.ago(seconds=10), "Quick look"),
+    )
+    sub = path.with_suffix("") / "subagents" / "agent-a1.jsonl"
+    h.jl(sub, h.assistant(h.ago(seconds=25), "s1", [h.tool("Read", "toolu_1", file_path="/a/b.py")]))
+    assert watch(path).running_subagents() == []
+
+
+def test_background_agent_stopped_with_task_stop(claude_home):
+    h = claude_home
+    path, _ = agent_session(h)
+    w = watch(path)
+    assert len(w.running_subagents()) == 1
+    h.jl(
+        path,
+        h.assistant(h.ago(seconds=12), "m7", [h.tool("TaskStop", "toolu_S3", task_id="a1")]),
+        stop_result(h, h.ago(seconds=11), "toolu_S3", "a1"),
+    )
+    w.poll()
+    assert w.running_subagents() == []
+
+
+def test_background_agent_stopped_after_it_was_resumed(claude_home):
+    h = claude_home
+    path, sub = agent_session(h, silent_min=7)
+    w = watch(path)
+    h.jl(path, h.notify("a1", "completed", h.ago(minutes=6)))
+    h.jl(sub, h.assistant(h.ago(minutes=4), "s2", [h.tool("Read", "toolu_1", file_path="/a/more.py")]))
+    silence(sub, 4)
+    w.poll()
+    assert len(w.running_subagents()) == 1
+    h.jl(
+        path,
+        h.assistant(h.ago(seconds=12), "m7", [h.tool("TaskStop", "toolu_S3", task_id="a1")]),
+        stop_result(h, h.ago(seconds=11), "toolu_S3", "a1"),
+    )
+    w.poll()
+    assert w.running_subagents() == []
+
+
+def test_background_agent_from_an_earlier_process_is_not_running(claude_home):
+    """It died with that process and no notification will come; the transcript still counts when it
+    changes: a new process may resume the agent."""
+    h = claude_home
+    path, sub = agent_session(h, launched_min=70, silent_min=65, started_ms=h.ms_ago(minutes=30))
+    w = watch(path)
+    assert w.running_subagents() == [] and not w.shown()
+    h.jl(sub, h.assistant(h.ago(seconds=5), "s2", [h.tool("Read", "toolu_1", file_path="/a/more.py")]))
+    w.poll()
+    assert [a.label for a in w.running_subagents()] == ["Fix chapter 1"]
+
+
+def test_idle_session_with_a_background_agent(claude_home):
+    h = claude_home
+    path, _ = agent_session(h, status="idle", since_ms=h.ms_ago(hours=2), launched_min=150.5)
+    w = watch(path)
+    at = model.now()
+    assert w.state == model.BACKGROUND and w.shown(at)
+    assert session_since(w, at).startswith("2:30:")  # how long the agent runs, not how long the session is idle
+
+    h.jl(path, h.notify("a1", "completed", h.ago(seconds=5)))
+    w.poll()
+    assert w.state == model.IDLE and not w.shown()
+
+
+def test_busy_session_waiting_for_a_long_silent_agent_is_shown(claude_home):
+    """Not the "busy, but its history has been silent" of a stuck registry: the agent has not reported."""
+    path, _ = agent_session(claude_home, launched_min=150, silent_min=120)
+    assert watch(path).shown()
+
+
+def test_ordinary_subagent_still_goes_by_its_transcript(claude_home):
+    """An Agent call the session waits for: no launch record, no notification, only the file."""
+    h = claude_home
+    h.session("s-fg")
+    path = h.transcript("s-fg", h.assistant(h.ago(seconds=30), "m1", [h.tool("Agent", "toolu_A", description="Look")]))
+    sub = path.with_suffix("") / "subagents" / "agent-f1.jsonl"
+    h.jl(sub, h.assistant(h.ago(seconds=5), "s1", [h.tool("Read", "toolu_1", file_path="/a/b.py")]))
+    w = watch(path, "s-fg")
+    assert len(w.running_subagents()) == 1
+    silence(sub, 3)
+    w.poll()
+    assert w.running_subagents() == []
+
+
+def test_replaced_transcript_forgets_background_agents(claude_home):
+    h = claude_home
+    path, _ = agent_session(h)
+    w = watch(path)
+    assert len(w.running_subagents()) == 1
+    new = path.with_name("new.jsonl")
+    h.jl(new, h.assistant(h.ago(minutes=1), "m1", [h.text("started over")]))
+    os.replace(new, path)
+    w.poll()
+    assert w.running_subagents() == []

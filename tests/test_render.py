@@ -516,6 +516,19 @@ def test_graph_does_not_import_the_screens():
     assert out.strip() == "False"
 
 
+def test_overview_keeps_a_silent_background_agent(claude_home):
+    h = claude_home
+    h.session("s-ag", name="render")
+    path = h.transcript("s-ag", h.agent_launch("a1", h.ago(minutes=10), "Fix chapter 1"))
+    sub = path.with_suffix("") / "subagents" / "agent-a1.jsonl"
+    h.jl(sub, h.assistant(h.ago(minutes=3), "s1", [h.tool("Bash", "toolu_R", description="Render chapter 1")]))
+    sub.with_name("agent-a1.meta.json").write_text(json.dumps({"description": "Fix chapter 1"}), encoding="utf-8")
+    t = model.now().timestamp() - 180
+    os.utime(sub, (t, t))
+    out = render(App(tracker(), expand_all=False).snapshot())
+    assert "Fix chapter 1" in out and "Bash Render chapter 1" in out and "1 subagent" in out
+
+
 def test_agent_colors_are_kept_across_frames_and_screens(busy_home):
     h, run = busy_home
     tr = tracker()

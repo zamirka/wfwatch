@@ -812,3 +812,68 @@ def test_replaced_transcript_forgets_background_agents(claude_home):
     os.replace(new, path)
     w.poll()
     assert w.running_subagents() == []
+
+
+def monitor_session(h, sid="s-mon", status="shell", since_ms=None, silent_min=5, pid=None):
+    """A session whose only background work is a Monitor: Claude Code runs it as a background shell, so
+    the registry says "shell", while the transcript has no Bash call to find."""
+    h.session(sid, status=status, since_ms=since_ms, pid=pid)
+    return h.transcript(
+        sid,
+        h.assistant(
+            h.ago(minutes=silent_min),
+            "m1",
+            [h.tool("Monitor", "toolu_M", command="gh run watch", description="Wait for CI", timeout_ms=600000)],
+        ),
+        {
+            "type": "user",
+            "timestamp": h.ago(minutes=silent_min - 0.1),
+            "toolUseResult": {"persistent": False, "taskId": "bM", "timeoutMs": 600000},
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_M", "content": "Monitor started"}]},
+        },
+    )
+
+
+def test_shell_status_is_a_background_task_without_a_command(claude_home, frozen_now):
+    """The registry knows of a background command that wfwatch does not find in the transcript."""
+    h = claude_home
+    w = watch(monitor_session(h, since_ms=h.ms_ago(minutes=3)), "s-mon")
+    assert w.state == model.BACKGROUND and w.shown() and w.animating()
+    assert w.running_bg_tasks() == [] and session_since(w, model.now()) == "3:00"
+
+
+def test_shell_status_keeps_the_time_of_a_known_command(claude_home, frozen_now):
+    h = claude_home
+    path, _ = bg_session(h, status="shell", since_ms=h.ms_ago(minutes=1), launched_min=5)
+    w = watch(path, "s-bg")
+    assert w.state == model.BACKGROUND and session_since(w, model.now()) == "5:00"
+
+
+def test_shell_status_is_noticed_however_long_the_session_is_quiet(claude_home):
+    """A long command keeps the session silent for hours, past what the transcript alone would tell."""
+    h = claude_home
+    silence(monitor_session(h, since_ms=h.ms_ago(hours=5), silent_min=300), 300)
+    tr = model.Tracker()
+    tr.scan()
+    tr.poll()
+    (w,) = tr.active_sessions()
+    assert w.session_id == "s-mon" and w.state == model.BACKGROUND
+
+
+def test_shell_status_ends_with_the_status(claude_home):
+    h = claude_home
+    w = watch(monitor_session(h), "s-mon")
+    h.session("s-mon", status="idle", since_ms=h.ms_ago(hours=1))
+    w.poll(model.load_sessions()["s-mon"])
+    assert w.state == model.IDLE and not w.shown()
+
+
+def test_shell_status_of_a_dead_process_is_not_shown(claude_home):
+    h = claude_home
+    gone = subprocess.Popen([sys.executable, "-c", ""])
+    gone.wait()
+    monitor_session(h, pid=gone.pid)
+    tr = model.Tracker()
+    tr.scan()
+    tr.poll()
+    assert tr.active_sessions() == []

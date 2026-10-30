@@ -178,6 +178,10 @@ and then the output file of Claude Code stays empty. wfwatch asks the system whi
 running process writes to and shows the last line of that file or of the output file, whichever
 was written last. A finished command shows its exit code.
 
+Claude Code keeps other work as a background command too, a Monitor for one. wfwatch finds no such
+command in the transcript, but the session registry says that one is running, so the session stays
+"◐ background task", only without these details.
+
 ### States
 
 | | Agent or phase | Workflow | Session |

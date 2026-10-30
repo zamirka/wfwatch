@@ -325,8 +325,8 @@ def phase_chain(r: Run) -> Text:
 
 
 def session_since(s: SessionWatch, at: datetime) -> str:
-    """How long the session has been in its state; for a background command – how long it runs."""
-    if s.state == BACKGROUND and (running := s.running_bg_tasks()):
+    """How long the session has been in its state; for a background command or agent – how long it runs."""
+    if s.state == BACKGROUND and (running := [*s.running_bg_tasks(), *s.bg_agents]):
         return fmt_dur(max(t.elapsed(at) for t in running))
     return fmt_dur((at - s.since).total_seconds()) if s.since else ""
 

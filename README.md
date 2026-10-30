@@ -118,10 +118,10 @@ waiting for your answer is yellow, an idle one is dim. Workflows and sessions ar
 sequence, workflows first. At the bottom is a common log, each line tagged with the number of its
 item.
 
-A session is shown while it works, waits for you or runs a background command, and for 15 minutes
-after it goes idle. The registry of sessions sometimes keeps a session "busy" long after it has
-stopped, so a busy session whose history has been quiet for over an hour (a waiting one, for over
-three hours) is left out.
+A session is shown while it works, waits for you or runs a background command or agent, and for 15
+minutes after it goes idle. The registry of sessions sometimes keeps a session "busy" long after it
+has stopped, so a busy session whose history has been quiet for over an hour (a waiting one, for
+over three hours) is left out.
 
 When the terminal is too low for everything, agent lines go first, then blocks fold into one line
 each, and at last a line says how many items are not shown (Tab reaches them).
@@ -205,7 +205,7 @@ that variable to watch another directory.
 
 | Source | What wfwatch takes from it |
 |---|---|
-| `projects/<project>/<session>.jsonl` | the session transcript: workflow launches and completion notices, background commands, the session's own tool calls |
+| `projects/<project>/<session>.jsonl` | the session transcript: workflow launches and completion notices, background commands and agents, the session's own tool calls |
 | `projects/<project>/<session>/subagents/workflows/<run>/journal.jsonl` | which agents of a run started, returned a result or failed |
 | `projects/<project>/<session>/subagents/workflows/<run>/agent-<id>.jsonl` | an agent's transcript: tool calls, model, tokens |
 | `projects/<project>/<session>/workflows/scripts/<name>-<run>.js` | the `meta` of the workflow script: name, description, phases |
@@ -242,11 +242,11 @@ foreground color. With `NO_COLOR` set, colors are dropped.
 - wfwatch reads internal files of Claude Code. Their format is not documented and can change with
   any update. If something stops showing up after an update, please open an issue with the output
   of `wfwatch --version` and `claude --version`.
-- Some states are inferred. An ordinary subagent counts as running while its transcript has
-  changed in the last 90 seconds. A session is alive while its process is (checked by process id
-  and start time), so sessions running in another container or on another machine that shares the
-  directory look closed. A background command started before its session was restarted is shown
-  as lost.
+- Some states are inferred. An ordinary subagent counts as running while its transcript has changed
+  in the last 90 seconds; a background one, until the notification of its end. A session is alive
+  while its process is (checked by process id and start time), so sessions running in another
+  container or on another machine that shares the directory look closed. A background command
+  started before its session was restarted is shown as lost.
 - Only this machine and one `CLAUDE_CONFIG_DIR` at a time.
 
 ## Privacy

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A background agent no longer vanishes from its session while it is silent. Subagents were judged
+  by their transcript alone: one that wrote nothing for 90 seconds (a long tool call, a long model
+  reply) counted as done, and if wfwatch was started at that moment it was not listed at all. A
+  background agent now runs from its launch to the notification of its end, as a background command
+  does. An agent waiting on a background command of its own still runs: Claude Code moves a
+  subagent's Bash call to the background after 180 seconds and reports "completed" for it. An agent
+  resumed after a notification runs again. It is marked done when the notification comes, not 90
+  seconds later, and its time counts from the launch, however long its transcript is.
+- A session with a running background agent stays in the overview, however long it has been silent.
+
 ## [0.2.0] - 2026-10-28
 
 ### Added

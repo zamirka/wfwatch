@@ -5,7 +5,8 @@ Sources (under CLAUDE_CONFIG_DIR, ~/.claude by default):
   projects/<slug>/<session>/subagents/workflows/<run>/agent-<id>.jsonl  agent transcript, written live
   projects/<slug>/<session>/workflows/scripts/<name>-<run>.js           workflow script: meta (name, phases)
   projects/<slug>/<session>.jsonl                                       session transcript: workflow launches,
-                                                                        background commands, task notifications
+                                                                        background commands and agents, task
+                                                                        notifications
   sessions/<pid>.json                                                   registry of running sessions
 plus one `ps` call per scan (session liveness, processes started by Bash tool calls) and
 /tmp/claude-<uid>/<slug>/<session>/tasks/<task>.output (output of background commands).
@@ -1016,6 +1017,7 @@ _NOTIFY = b"<task-notification>"
 _BG_LAUNCH = b'"run_in_background"'
 _BASH = (b'"name":"Bash"', b'"name": "Bash"')  # a foreground command that times out moves to the background
 _BG_ID = b'"backgroundTaskId"'
+_BG_AGENT = b'"isAsync"'  # the result of an Agent call that went to the background
 _STOP_IDS = (b'"task_id"', b'"shell_id"')  # a TaskStop (KillShell before it) call and its result
 _STOP_TOOLS = ("TaskStop", "KillShell")
 _API_LINES = (b'{"type":"api-request-',)  # request logs: huge, and they only repeat the history
@@ -1027,6 +1029,8 @@ _TAG = {k: re.compile(f"<{k}>(.*?)</{k}>", re.DOTALL) for k in ("task-id", "stat
 _OUTPUT_AT = re.compile(r"Output is being written to: (\S+?\.output)")
 _EXIT_CODE = re.compile(r"\(exit code (-?\d+)\)")
 _QUOTED = re.compile(r'"(.+?)"')
+# the notification of an agent that stopped to wait for a background command of its own: not its end
+_WAITS_ON_WORK = re.compile(r'" is waiting on its own background work$')
 
 
 def _content(d: dict) -> list:
@@ -1156,21 +1160,35 @@ class BgTask:
             self.description = q[1]
 
 
+@dataclass
+class BgAgent:
+    """A subagent the session started in the background."""
+
+    agent_id: str
+    started: datetime
+    ended: datetime | None = None  # the last notification (or stop): a resumed agent notifies again
+
+    def running(self, last_ts: datetime | None) -> bool:
+        """`last_ts` is the last record of its transcript. An agent writes nothing after its
+        notification unless it was resumed."""
+        return self.ended is None or (last_ts is not None and last_ts > self.ended)
+
+
 class SessionLog:
-    """Workflow launches, background commands and task notifications of one session transcript.
+    """Workflow launches, background commands and agents, task notifications of one session transcript.
 
     The transcript is read once (in chunks, only the lines that matter) and shared by every
     run of the session and by its SessionWatch."""
 
     def __init__(self, path: Path):
         self.path = path
-        self.tail = Tail(
-            path, needles=(_LAUNCH, _NOTIFY, _BG_LAUNCH, _BG_ID, *_BASH, *_STOP_IDS), skip_prefixes=_API_LINES
-        )
+        needles = (_LAUNCH, _NOTIFY, _BG_LAUNCH, _BG_ID, _BG_AGENT, *_BASH, *_STOP_IDS)
+        self.tail = Tail(path, needles=needles, skip_prefixes=_API_LINES)
         self.generation = 0  # bumped when the transcript was replaced and everything was read anew
         self.launches: list[Launch] = []
         self.notices: dict[str, Notice] = {}  # task id -> first notification (or stop)
         self.bg: dict[str, BgTask] = {}  # task id -> background command, in start order
+        self.agents: dict[str, BgAgent] = {}  # agent id -> background agent
         # recent Bash calls: tool_use id -> (time, description); one may come back as a background task
         self._pending: dict[str, tuple[datetime | None, str]] = {}
         self._stops: dict[str, str] = {}  # TaskStop calls waiting for their result: tool_use id -> task id
@@ -1188,7 +1206,7 @@ class SessionLog:
         if self.tail.reset:  # the transcript was replaced: everything is read anew
             self.tail.reset = False
             self.generation += 1
-            self.launches, self.notices, self.bg, self._pending, self._stops = [], {}, {}, {}, {}
+            self.launches, self.notices, self.bg, self.agents, self._pending, self._stops = [], {}, {}, {}, {}, {}
 
     def _line(self, ln: bytes) -> None:
         d = _loads(ln)
@@ -1210,6 +1228,8 @@ class SessionLog:
                 )
             if _s(tur.get("backgroundTaskId")):
                 self._bg_started(_s(tur["backgroundTaskId"]), d, ts)
+            if tur.get("isAsync") is True and _s(tur.get("agentId")):
+                self._agent_started(_s(tur["agentId"]), ts)
             if self._stops and d.get("type") == "user":
                 self._stop_result(tur, d, ts)
         if d.get("type") == "assistant":
@@ -1246,6 +1266,7 @@ class SessionLog:
             task_id = self._stops.pop(_s(c.get("tool_use_id")), "")
             if not task_id or clean(_s(tur.get("task_id") or tur.get("shell_id"))) != task_id:
                 continue
+            self._agent_ended(task_id, ts)
             if task_id not in self.notices:  # a notification that came first stays
                 n = self.notices[task_id] = Notice(ts or now(), "killed")
                 if task_id in self.bg:
@@ -1268,6 +1289,15 @@ class SessionLog:
             if task_id in self.notices:
                 t.apply(self.notices[task_id])
 
+    def _agent_started(self, agent_id: str, ts: datetime | None) -> None:
+        if agent_id not in self.agents:
+            n = self.notices.get(agent_id)
+            self.agents[agent_id] = BgAgent(agent_id, ts or now(), n.ts if n else None)
+
+    def _agent_ended(self, task_id: str, ts: datetime | None) -> None:
+        if task_id in self.agents:
+            self.agents[task_id].ended = ts or now()
+
     def _notice(self, text: str, ts: datetime | None) -> None:
         """One notification (a record holds one: anything after it is not looked at)."""
         block = _BLOCK.match(text)
@@ -1278,14 +1308,20 @@ class SessionLog:
         if not tid or not st:
             return
         task_id = clean(tid[1]).strip()
-        if not task_id or task_id in self.notices:
+        if not task_id:
             return
-        summary, out = _TAG["summary"].search(body), _TAG["output-file"].search(body)
+        found, out = _TAG["summary"].search(body), _TAG["output-file"].search(body)
+        summary = clean(found[1]).strip() if found else ""
+        if _WAITS_ON_WORK.search(summary):
+            return
+        self._agent_ended(task_id, ts)
+        if task_id in self.notices:
+            return
         output = out[1].strip() if out else ""
         n = self.notices[task_id] = Notice(
             ts or now(),
             clean(st[1]).strip(),
-            clean(summary[1]).strip() if summary else "",
+            summary,
             output if output and output_allowed(output) else "",
         )
         if task_id in self.bg:
@@ -1628,6 +1664,7 @@ class SessionWatch:
         self.log = log if log is not None else SessionLog(transcript)
         self.main = Agent("main", info.name or session_id[:8], "", Tail(transcript, last_bytes=self.TAIL_BYTES))
         self.subagents: dict[Path, Agent] = {}
+        self.bg_agents: list[Agent] = []  # background agents at work, however long they have been silent
         self.events: list[Event] = []
         self.procs: list[Proc] = []  # what its Bash tool shells are running now, busiest first
         # .output of a running background command (real path) -> the file its current process writes to instead
@@ -1651,10 +1688,10 @@ class SessionWatch:
 
     @property
     def state(self) -> str:
-        """What to show: busy | waiting | background (idle, but a background command runs) | idle."""
+        """What to show: busy | waiting | background (idle, but a background command or agent runs) | idle."""
         if self.status in ACTIVE_STATUSES:
             return self.status
-        return BACKGROUND if self.running_bg_tasks() else IDLE
+        return BACKGROUND if self.running_bg_tasks() or self.bg_agents else IDLE
 
     @property
     def since(self) -> datetime | None:
@@ -1694,8 +1731,8 @@ class SessionWatch:
             self.main.reset_stats()
         for ts, action in feed_agent(self.main, entries, self._see_cwd):
             self._event(ts, self.main.label, action)
-        self._poll_subagents()
         self.log.poll()
+        self._poll_subagents()
         self.poll_bg()
 
     def _see_cwd(self, cwd: str) -> None:
@@ -1707,13 +1744,15 @@ class SessionWatch:
             files = sorted((self.transcript.with_suffix("") / "subagents").glob("agent-*.jsonl"))
         except OSError:
             return
+        self.bg_agents = []
         for f in files:
             try:
                 fresh = f.stat().st_mtime >= cutoff
             except OSError:
                 continue
             a = self.subagents.get(f)
-            if a is None and fresh:
+            bg = self._bg_agent(f)
+            if a is None and (fresh or (bg is not None and bg.ended is None)):
                 label = f.stem
                 try:
                     meta = json.loads(f.with_name(f.stem + ".meta.json").read_text(encoding="utf-8", errors="replace"))
@@ -1721,6 +1760,7 @@ class SessionWatch:
                 except (OSError, ValueError, RecursionError):
                     pass
                 a = self.subagents[f] = Agent(f.stem, label or clean(f.stem), "", Tail(f, last_bytes=self.TAIL_BYTES))
+                a.started = bg.started if bg is not None else None  # a long transcript is read from its tail
             if a is not None:
                 entries = a.tail.read()
                 if a.tail.reset:
@@ -1728,7 +1768,17 @@ class SessionWatch:
                     a.reset_stats()
                 for ts, action in feed_agent(a, entries):
                     self._event(ts, a.label, action)
-                a.status = RUNNING if fresh else DONE
+                works = bg.running(a.last_ts) if bg is not None else fresh
+                a.status = RUNNING if works else DONE
+                if bg is not None and works:
+                    self.bg_agents.append(a)
+
+    def _bg_agent(self, f: Path) -> BgAgent | None:
+        """The background agent writing this transcript. Not one started by an earlier process of the
+        session: it is gone, no notification will come."""
+        bg = self.log.agents.get(f.stem.removeprefix("agent-"))
+        proc_start = self.info.started_at
+        return None if bg is None or (proc_start and bg.started < proc_start) else bg
 
     def poll_bg(self) -> None:
         """Background commands: started, finished, their last output line."""
@@ -1795,10 +1845,10 @@ class SessionWatch:
         return ((at or now()) - max(ts)).total_seconds() if ts else float("inf")
 
     def shown(self, at: datetime | None = None) -> bool:
-        """Show in the overview: a background command runs; or it works or waits (and is not stuck);
-        or it went idle a moment ago."""
+        """Show in the overview: a background command or agent runs; or it works or waits (and is not
+        stuck); or it went idle a moment ago."""
         at = at or now()
-        if self.running_bg_tasks():
+        if self.running_bg_tasks() or self.bg_agents:
             return True
         if self.status in ACTIVE_STATUSES:
             return self.quiet_sec(at) < QUIET_MAX[self.status]

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-30
+
 ### Fixed
 
 - A session running a background command that wfwatch does not find in its transcript, such as a
@@ -103,7 +105,8 @@ Claude Code 2.1.311.
   is restored after `q`, Ctrl+C, SIGTERM and SIGHUP.
 - `--version` and `python -m wfwatch`.
 
-[Unreleased]: https://github.com/zamirka/wfwatch/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/zamirka/wfwatch/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/zamirka/wfwatch/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/zamirka/wfwatch/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/zamirka/wfwatch/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/zamirka/wfwatch/compare/v0.1.0...v0.1.1

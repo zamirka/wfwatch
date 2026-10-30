@@ -426,7 +426,7 @@ def test_tool_shells_pair_each_shell_with_its_busiest_leaf():
 @pytest.mark.skipif(sys.platform == "win32", reason="no lsof and no /proc")
 def test_open_files_of_a_real_process(tmp_path):
     log = tmp_path / "render.log"
-    with open(log, "w") as f:
+    with open(log, "w", encoding="utf-8") as f:
         p = subprocess.Popen(["sleep", "30"], stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT)
     try:
         got = model.open_files([p.pid, 2**22 + 7])  # a pid that is not there is skipped

@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-01
+
+### Added
+
+- Local OpenAI Codex CLI/app sessions alongside Claude Code, with model, tool activity, tokens,
+  a shared log and nested agents grouped under their root session. Supports both top-level and
+  thread-spawn ancestry metadata.
+- Codex background commands, code-mode result blocks and yielded code cells: output, elapsed
+  time, completion/exit codes and Ctrl+C results remain visible independently of agent turns.
+- Codex writer/process discovery on macOS and Linux: long silent agents remain visible while
+  their rollout is open for writing. Associated child processes show CPU and redirected logs.
+  Matching uses thread identity or a unique command/launch-time match; ambiguous processes are
+  left unassigned. Tool session IDs are never used as operating-system PIDs.
+- A historical parity audit and Codex regression/e2e coverage, including a real writer, shell
+  process, redirected output and CLI subprocess.
+
+### Fixed
+
+- Codex commands launched before the activity tail are recovered on startup; partial, damaged,
+  replaced and large-image transcripts do not lose recent actions or preserve replaced tasks.
+- Native completion arriving before a tool result cannot resurrect a finished command.
+- Completed parents keep running nested agents and their commands/processes visible; old parent
+  objects are retained between scans. Process reuse does not keep a lost command running.
+- Codex MCP calls show their server and tool while retaining meaningful arguments; command output
+  strips ANSI sequences and preserves the last progress line.
+
+### Notes
+
+- Codex rollouts do not supply Claude Workflow phase journals or reliable live approval states.
+  Web-only ChatGPT conversations do not produce local rollouts. Without OS evidence, unfinished
+  work becomes stale after an hour of silence. See the README and parity audit for these boundaries.
+
 ## [0.2.2] - 2026-10-30
 
 ### Fixed
@@ -105,7 +137,8 @@ Claude Code 2.1.311.
   is restored after `q`, Ctrl+C, SIGTERM and SIGHUP.
 - `--version` and `python -m wfwatch`.
 
-[Unreleased]: https://github.com/zamirka/wfwatch/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/zamirka/wfwatch/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/zamirka/wfwatch/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/zamirka/wfwatch/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/zamirka/wfwatch/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/zamirka/wfwatch/compare/v0.1.1...v0.2.0

@@ -43,11 +43,11 @@ not use anything newer than 3.10 has (for example `datetime.UTC`).
 
 ## Tests
 
-- Tests never read the real `~/.claude`. `tests/conftest.py` has builders (`Home`) for a
+- Tests never read the real `~/.claude` or `~/.codex`. `tests/conftest.py` has builders (`Home`) for a
   synthetic `CLAUDE_CONFIG_DIR`: session registry records, transcripts, workflow journals and
   scripts, background task output.
 - Times are relative to `model.now()`; the `frozen_now` fixture stops the clock. No fixed dates,
-  no `sleep`.
+  no arbitrary timing sleeps. Real-process tests wait for explicit readiness and clean up their process group.
 - The interface is English in tests unless a test switches the language itself. Terminal size
   and color settings are pinned by `conftest.py`, so the result does not depend on the terminal
   or the locale the tests run in.
@@ -67,11 +67,11 @@ not use anything newer than 3.10 has (for example `datetime.UTC`).
 - Widths are counted in terminal cells (`rich.cells.cell_len`), not in characters: wide
   characters such as CJK and emoji take two cells.
 
-## When a Claude Code update breaks wfwatch
+## When a Claude Code or Codex update breaks wfwatch
 
-The files wfwatch reads are internal to Claude Code and not documented, so an update can change
+The files wfwatch reads are internal to Claude Code and Codex and not documented, so an update can change
 them. If something stops showing up or looks wrong after an update, open an issue with the
-output of `wfwatch --version` and `claude --version` and an anonymized sample of a line that
+output of `wfwatch --version` and `claude --version` / `codex --version` and an anonymized sample of a line that
 wfwatch does not understand (see Privacy below). A fix should come with a test that builds such
 a line with the `conftest.py` builders.
 

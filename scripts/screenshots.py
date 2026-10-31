@@ -98,7 +98,7 @@ class Session:
     ``close`` puts everything back."""
 
     def __init__(self, lang: str, at: float = 0.0):
-        from wfwatch import i18n, model, render, theme
+        from wfwatch import codex, i18n, model, render, theme
         from wfwatch.cli import App, choose_start
 
         self._undo = contextlib.ExitStack()
@@ -108,6 +108,7 @@ class Session:
         self._env("TZ", "UTC")  # the log shows local times
         self._env("CLAUDE_CONFIG_DIR", str(home))
         self._set(model, "CLAUDE_DIR", home)
+        self._set(codex, "CODEX_DIR", home / "codex")
         self._set(model, "CLAUDE_TMP", home / "tmp")
         self._set(model, "now", self.clock.now)
         self._set(render, "time", types.SimpleNamespace(monotonic=self.clock.mono))

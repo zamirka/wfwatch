@@ -324,3 +324,10 @@ def demo_run(claude_home: Home):
         {"type": "result", "key": "k1", "agentId": "a1", "result": {"summary": "Сценарии готовы\nподробности"}},
     )
     return h, sess, run
+
+
+@pytest.fixture(autouse=True)
+def isolate_codex(tmp_path, monkeypatch):
+    from wfwatch import codex
+
+    monkeypatch.setattr(codex, "CODEX_DIR", tmp_path / "codex")

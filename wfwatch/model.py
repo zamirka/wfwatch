@@ -1920,6 +1920,7 @@ class Tracker:
         self._registry: dict[Path, dict] = {}  # last good registry records
         self._missing: dict[str, int] = {}
         self._transcripts: dict[str, Path] = {}
+        self._codex: dict = {}
 
     def log(self, transcript: Path) -> SessionLog:
         if transcript not in self.logs:
@@ -1955,6 +1956,11 @@ class Tracker:
         keep = set(dirs)
         for d in [d for d, r in self.runs.items() if d not in keep and r.state != "running"]:
             del self.runs[d]
+        from . import codex
+
+        codex_watches = codex.scan(self._codex, self.TRACK_SEC, self.procs)
+        self.sessions.update({sid: w.info for sid, w in codex_watches.items()})
+        self.watches.update(codex_watches)
         self._scan_sessions()
         used = {r.log.path for r in self.runs.values()} | {w.log.path for w in self.watches.values()}
         for p in set(self.logs) - used:
@@ -1986,8 +1992,10 @@ class Tracker:
             self.guard(w, w.poll)
             self.watches[sid] = w
         for sid, w in self.watches.items():
+            if sid.startswith("codex:"):
+                continue
             info = self.sessions.get(sid)
-            w.procs = self.procs.tool_processes(info.pid) if self.procs is not None and info else []
+            w.procs = self.procs.tool_processes(info.pid) if self.procs is not None and info and info.pid else []
         self._find_redirects()
 
     def _find_redirects(self) -> None:
@@ -1999,7 +2007,7 @@ class Tracker:
         shells: dict[str, list[tuple[Proc, Proc]]] = {}
         for sid, w in self.watches.items():
             info = self.sessions.get(sid)
-            if self.procs is not None and info and w.running_bg_tasks():
+            if not sid.startswith("codex:") and self.procs is not None and info and w.running_bg_tasks():
                 shells[sid] = self.procs.tool_shells(info.pid)
         pids = {p.pid for pairs in shells.values() for pair in pairs for p in pair}
         files = open_files(pids) if pids else {}

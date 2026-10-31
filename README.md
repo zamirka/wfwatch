@@ -5,14 +5,14 @@
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
 A live terminal view of Claude Code [workflows](https://code.claude.com/docs/en/workflows),
-[subagents](https://code.claude.com/docs/en/sub-agents) and sessions.
+[subagents](https://code.claude.com/docs/en/sub-agents) and sessions, alongside OpenAI Codex sessions.
 
 [Русская версия](README.ru.md)
 
 A workflow runs dozens of agents in phases while your sessions keep working in other projects.
 wfwatch shows all of it in a separate terminal: which workflows are running, which phase each one
 is in and what every agent is doing right now, which sessions are working, waiting for your
-answer or running a background command. It only reads the files Claude Code already writes, so it
+answer or running a background command. It only reads local files Claude Code and Codex already write, so it
 never slows down or interrupts anything. Claude Code's own `/workflows` view shows the runs of a
 session inside that session; wfwatch watches every session in every project at once.
 
@@ -22,6 +22,33 @@ wfwatch is an unofficial tool, not affiliated with or endorsed by Anthropic (see
 ![wfwatch: the overview, then a workflow moving on to its next phase, then a session with two subagents](docs/demo.gif)
 
 *All screenshots are made from [synthetic demo data](#try-it-on-demo-data).*
+
+## Codex sessions
+
+Run `wfwatch` or `wfwatch --overview` as usual. Codex CLI and app sessions appear automatically
+beside Claude Code sessions. The reader uses local `~/.codex/sessions` rollout files
+(`CODEX_HOME` overrides the directory); no hooks, API keys or network requests are needed.
+It shows the model, tool activity and token usage, with child and nested agent threads grouped
+under their root session and a shared activity log. Background commands from `exec_command`,
+`write_stdin` and `functions.exec` appear with their output and exit status, even after the agent
+finishes its turn. Yielded code cells remain visible until `functions.wait` finishes them.
+
+On macOS and Linux, wfwatch uses the process holding the rollout open for writing to keep long,
+silent agents visible. When a child command can be associated with its thread, it also shows its
+busiest process, CPU usage and the last line of a redirected stdout/stderr file. Association uses
+`CODEX_THREAD_ID` and the command; when the OS hides the environment, it requires a unique matching
+command and launch time under the verified writer. Ambiguous processes are left unassigned.
+Tool session identifiers are never treated as OS process ids.
+
+The reader replays relevant rollout records on startup, then reads only appended data; the visible
+log is bounded. Completed sessions remain visible for 15 minutes. Without OS evidence, unfinished
+turns and commands become stale after an hour without activity. Process disappearance is shown as
+stale unless an exit result supplies the actual exit code. Exact approval/waiting state is not
+recorded reliably in rollouts. Web-only ChatGPT conversations are not local rollouts; Claude
+workflow phase diagrams still use the Claude workflow journals, which Codex does not generate.
+The rollout format is internal and may change between Codex versions.
+
+See the [historical parity audit](docs/codex-parity-audit.md) for the migrated fixes and tests.
 
 ## Install
 
@@ -216,6 +243,7 @@ that variable to watch another directory.
 | `projects/<project>/<session>/subagents/agent-*.jsonl` | ordinary subagents of a session |
 | `sessions/<pid>.json` | running sessions: name, status, working directory, where the session is open |
 | `/tmp/claude-<uid>/<project>/<session>/tasks/<task>.output` | the output of background commands (its last line) |
+| `CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` (default `~/.codex`) | Codex turns, tools, tokens, background commands and nested agents |
 | `ps` | whether a session's process is alive, what its Bash tool is running right now |
 | `lsof` (macOS), `/proc/<pid>/fd` (Linux) | the file a background command writes to instead of its output file (`> render.log`): its last line |
 
@@ -230,7 +258,7 @@ processes, every three seconds. Runs with activity in the last three hours are t
 - A UTF-8 terminal with 256 colors or truecolor and a font with box-drawing characters.
 - At least 100 columns for the full diagram with the phase column (80x24 works, with a compact
   layout).
-- Claude Code. wfwatch was checked against Claude Code 2.1.311.
+- Claude Code and/or OpenAI Codex CLI/app. Checked against Claude Code 2.1.311 and Codex 0.166.0.
 
 ## Language and colors
 

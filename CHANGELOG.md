@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-01
+
+### Fixed
+
+- Completed Codex code cells no longer leave phantom background tasks. Cell identifiers such as
+  `g5:26` are kept intact: previously the colon and suffix were dropped, merging distinct cells
+  and preventing their `functions.wait` completion from matching the original task.
+
 ## [0.3.0] - 2026-11-01
 
 ### Added
@@ -137,7 +145,8 @@ Claude Code 2.1.311.
   is restored after `q`, Ctrl+C, SIGTERM and SIGHUP.
 - `--version` and `python -m wfwatch`.
 
-[Unreleased]: https://github.com/zamirka/wfwatch/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/zamirka/wfwatch/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/zamirka/wfwatch/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/zamirka/wfwatch/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/zamirka/wfwatch/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/zamirka/wfwatch/compare/v0.2.0...v0.2.1

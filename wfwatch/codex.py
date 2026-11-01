@@ -206,7 +206,7 @@ class CodexWatch(m.SessionWatch):
             data = m._loads(text.encode("utf-8"))
             if not isinstance(data, dict):
                 data = {}
-                if match := re.search(r"Script running with cell ID ([\w-]+)", text):
+                if match := re.search(r"Script running with cell ID (\S+)", text):
                     data["session_id"] = "cell:" + match[1]
                 elif name == "wait" and args.get("cell_id") and re.search(r"Script (completed|terminated)", text):
                     data["session_id"] = "cell:" + m._s(args["cell_id"])

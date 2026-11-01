@@ -838,3 +838,44 @@ def test_hidden_environment_never_assigns_ambiguous_process_to_two_threads(tmp_p
     tracker = model.Tracker()
     tracker.scan()
     assert tracker.watches["codex:one"].current_proc is None
+
+
+def test_opaque_cell_ids_with_colons_complete_independently(tmp_path, monkeypatch):
+    """Code-mode cell IDs include a generation and ordinal; neither may be dropped."""
+    monkeypatch.setattr(codex, "CODEX_DIR", tmp_path)
+    path = rollout(tmp_path)
+    for index, cell in enumerate(("g5:4", "g5:26")):
+        call_id = f"start-{index}"
+        append(
+            path,
+            row(
+                "response_item",
+                {
+                    "type": "custom_tool_call",
+                    "name": "functions.exec",
+                    "call_id": call_id,
+                    "input": "await work()",
+                },
+            ),
+        )
+        append(
+            path,
+            row(
+                "response_item",
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": call_id,
+                    "output": [{"type": "input_text", "text": f"Script running with cell ID {cell}\nOutput:\n"}],
+                },
+            ),
+        )
+    tracker = model.Tracker()
+    tracker.scan()
+    watch = tracker.watches["codex:one"]
+    assert {t.task_id for t in watch.running_bg_tasks()} == {"cell:g5:4", "cell:g5:26"}
+    for index, cell in enumerate(("g5:4", "g5:26")):
+        call(path, "functions.wait", {"cell_id": cell}, f"wait-{index}")
+        result(path, [{"type": "input_text", "text": "Script completed\nOutput:\nfinished"}], f"wait-{index}")
+        tracker.poll()
+        assert len(watch.running_bg_tasks()) == 1 - index
+    assert all(t.status == "completed" for t in watch.bg_tasks)

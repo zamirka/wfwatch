@@ -4,6 +4,8 @@ import contextlib
 import json
 from datetime import timedelta
 
+import pytest
+
 from wfwatch import codex, model
 
 
@@ -721,12 +723,17 @@ def test_nested_command_process_is_visible_in_parent(tmp_path, monkeypatch):
     assert tracker.watches["codex:one"].current_proc.pid == 511
 
 
-def test_reused_process_id_is_not_proof_that_command_still_runs(tmp_path, monkeypatch):
+@pytest.mark.parametrize("linux_ticks", [False, True])
+def test_reused_process_id_is_not_proof_that_command_still_runs(tmp_path, monkeypatch, linux_ticks):
     monkeypatch.setattr(codex, "CODEX_DIR", tmp_path)
     path = rollout(tmp_path)
     call(path, "exec_command", {"cmd": "python worker.py > /tmp/render.log"})
     result(path, '{"session_id":42,"output":"working"}')
     table = process_table()
+    # A synthetic ps table must use synthetic /proc identities too: those PIDs
+    # can belong to unrelated real runner processes on Linux.
+    ticks = {510: 100, 511: 101} if linux_ticks else {}
+    monkeypatch.setattr(model, "proc_start_ticks", lambda pid: ticks.get(pid))
     monkeypatch.setattr(model.ProcTable, "snapshot", classmethod(lambda cls: table))
     monkeypatch.setattr(model, "open_files", lambda pids: {500: [(10, str(path))]})
     monkeypatch.setattr(codex, "process_threads", lambda pids: {510: "one"})
@@ -738,6 +745,8 @@ def test_reused_process_id_is_not_proof_that_command_still_runs(tmp_path, monkey
     table.procs[511].args = "another-process"
     table.procs[510].elapsed = 1
     table.procs[511].elapsed = 1
+    if linux_ticks:
+        ticks.update({510: 200, 511: 201})
     tracker.scan()
     assert not watch.running_bg_tasks()
 

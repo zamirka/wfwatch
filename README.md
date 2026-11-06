@@ -257,8 +257,9 @@ processes, every three seconds. Runs with activity in the last three hours are t
 
 ## Requirements
 
-- Python 3.10 or newer, macOS or Linux. On Windows, run wfwatch in WSL: the full-screen mode needs
-  a POSIX terminal. Native Windows is not tested.
+- Python 3.10 or newer on macOS, Linux or Windows. On Windows use Windows Terminal (or another
+  console with escape sequences); there, background commands are shown without their processes,
+  CPU usage and output files, which are read with `ps`, `/proc` and `lsof`.
 - A UTF-8 terminal with 256 colors or truecolor and a font with box-drawing characters.
 - At least 100 columns for the full diagram with the phase column (80x24 works, with a compact
   layout).

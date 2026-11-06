@@ -422,6 +422,17 @@ def _err(msg: str) -> None:
     print(f"wfwatch: {msg}", file=sys.stderr)
 
 
+def _windows_pipe() -> dict:
+    """Windows writes a pipe or a file in the ANSI code page (cp1252), which has no box drawing
+    characters, and Rich takes a stdout without a console for an old console without escape
+    sequences. --list and --once to a file write UTF-8 instead, like on POSIX."""
+    if sys.platform != "win32" or _isatty(sys.stdout):
+        return {}
+    with contextlib.suppress(AttributeError, ValueError, OSError):  # replaced or closed stdout
+        sys.stdout.reconfigure(encoding="utf-8")
+    return {"legacy_windows": False}
+
+
 def _isatty(f) -> bool:
     """A real terminal. Rich's is_terminal alone is not enough: FORCE_COLOR makes it true for a pipe."""
     try:
@@ -491,7 +502,7 @@ def _main(argv: list[str] | None) -> int:
         i18n.use_lang(lang_option(argv))  # an unknown value: auto here, then the parser rejects it
         args = build_parser().parse_args(argv)
         i18n.use_lang(args.lang)
-        console = Console(width=args.width) if args.width else Console()
+        console = Console(width=args.width or None, **_windows_pipe())
         model.DEBUG = debug or args.debug
         theme.use_theme(args.theme)
         return _run(args, console)

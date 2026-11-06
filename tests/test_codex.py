@@ -888,3 +888,225 @@ def test_opaque_cell_ids_with_colons_complete_independently(tmp_path, monkeypatc
         tracker.poll()
         assert len(watch.running_bg_tasks()) == 1 - index
     assert all(t.status == "completed" for t in watch.bg_tasks)
+
+
+def code_call(path, source, call_id="code"):
+    append(
+        path,
+        row(
+            "response_item",
+            {
+                "type": "custom_tool_call",
+                "name": "functions.exec",
+                "call_id": call_id,
+                "input": source,
+            },
+        ),
+    )
+
+
+def code_result(path, *outputs, call_id="code", header="Script completed\nWall time 0.0 seconds\nOutput:\n"):
+    append(
+        path,
+        row(
+            "response_item",
+            {
+                "type": "custom_tool_call_output",
+                "call_id": call_id,
+                "output": [
+                    {"type": "input_text", "text": header},
+                    *[
+                        {"type": "input_text", "text": json.dumps(output) if isinstance(output, dict) else output}
+                        for output in outputs
+                    ],
+                ],
+            },
+        ),
+    )
+
+
+def test_code_mode_sequential_polls_resolve_their_own_commands(tmp_path, monkeypatch):
+    monkeypatch.setattr(codex, "CODEX_DIR", tmp_path)
+    path = rollout(tmp_path)
+    code_call(
+        path, 'text(await tools.exec_command({"cmd":"sleep 1"})); text(await tools.exec_command({cmd:"sleep 2"}));'
+    )
+    code_result(path, {"session_id": 41, "output": "one"}, {"session_id": 42, "output": "two"})
+    tracker = model.Tracker()
+    tracker.scan()
+    watch = tracker.watches["codex:one"]
+    assert [t.description for t in watch.bg_tasks] == ["sleep 1", "sleep 2"]
+    code_call(
+        path,
+        'text(await tools.write_stdin({session_id:41,chars:""})); '
+        'text(await tools.write_stdin({"session_id":42,"chars":""}));',
+        "poll",
+    )
+    code_result(
+        path, {"exit_code": 0, "output": "one done"}, {"session_id": 42, "output": "two working"}, call_id="poll"
+    )
+    tracker.poll()
+    assert [(t.task_id, t.line) for t in watch.running_bg_tasks()] == [("42", "two working")]
+    code_call(path, 'text(await tools.write_stdin({session_id:42, chars:"\\u0003"}));', "stop")
+    code_result(path, {"exit_code": 130, "output": "stopped"}, call_id="stop")
+    tracker.poll()
+    assert not watch.running_bg_tasks()
+    assert [t.exit_code for t in watch.bg_tasks] == [0, 130]
+
+
+def test_code_mode_yield_keeps_result_mapping_for_later_wait(tmp_path, monkeypatch):
+    monkeypatch.setattr(codex, "CODEX_DIR", tmp_path)
+    path = rollout(tmp_path)
+    for sid in (41, 42):
+        call(path, "exec_command", {"cmd": f"sleep {sid}"}, f"launch-{sid}")
+        result(path, json.dumps({"session_id": sid, "output": "working"}), f"launch-{sid}")
+    code_call(path, "text(await tools.write_stdin({session_id:41})); text(await tools.write_stdin({session_id:42}));")
+    code_result(
+        path,
+        {"exit_code": 0, "output": "first done"},
+        header="Script running with cell ID g7:2\nWall time 1 seconds\nOutput:\n",
+    )
+    tracker = model.Tracker()
+    tracker.scan()
+    watch = tracker.watches["codex:one"]
+    assert {t.task_id for t in watch.running_bg_tasks()} == {"42", "cell:g7:2"}
+    call(path, "functions.wait", {"cell_id": "g7:2"}, "wait")
+    result(
+        path,
+        [
+            {"type": "input_text", "text": "Script completed\nOutput:\n"},
+            {"type": "input_text", "text": '{"exit_code":0,"output":"second done"}'},
+        ],
+        "wait",
+    )
+    tracker.poll()
+    assert not watch.running_bg_tasks()
+    assert watch.bg_tasks[1].line == "second done"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '215: if match := re.search(r"Script running with cell ID (\\S+)", text):',
+        "Output:\nScript running with cell ID g1:2\n",
+        "Chunk ID: abc\nProcess exited with code 0\nOutput:\nProcess running with session ID 123\n",
+    ],
+)
+def test_printed_task_protocol_is_not_a_real_launch(tmp_path, monkeypatch, text):
+    monkeypatch.setattr(codex, "CODEX_DIR", tmp_path)
+    path = rollout(tmp_path)
+    code_call(path, 'text(await tools.exec_command({cmd:"rg protocol source.py"}));')
+    code_result(path, text)
+    tracker = model.Tracker()
+    tracker.scan()
+    assert not tracker.watches["codex:one"].running_bg_tasks()
+
+
+def test_open_writer_does_not_keep_unobserved_commands_running_for_days(tmp_path, monkeypatch):
+    monkeypatch.setattr(codex, "CODEX_DIR", tmp_path)
+    path = rollout(tmp_path)
+    old = model.now() - timedelta(days=2)
+    append(
+        path,
+        row(
+            "response_item",
+            {"type": "function_call", "name": "exec_command", "call_id": "old", "arguments": '{"cmd":"sleep 60"}'},
+            old,
+        ),
+        row(
+            "response_item",
+            {"type": "function_call_output", "call_id": "old", "output": '{"session_id":41,"output":"working"}'},
+            old,
+        ),
+        row("event_msg", {"type": "task_complete"}, old),
+    )
+    monkeypatch.setattr(model.ProcTable, "snapshot", classmethod(lambda cls: process_table()))
+    monkeypatch.setattr(model, "open_files", lambda pids: {500: [(10, str(path))]})
+    tracker = model.Tracker()
+    tracker.scan()
+    watch = tracker.watches["codex:one"]
+    assert watch.writer_alive
+    assert not watch.running_bg_tasks()
+    assert watch.bg_tasks[0].status == "stale"
+    assert watch.bg_tasks[0].exit_code is None
+    assert watch not in tracker.active_sessions()
+
+
+def test_old_command_with_positive_process_evidence_remains_running(tmp_path, monkeypatch):
+    monkeypatch.setattr(codex, "CODEX_DIR", tmp_path)
+    path = rollout(tmp_path)
+    old = model.now() - timedelta(hours=2)
+    append(
+        path,
+        row(
+            "response_item",
+            {
+                "type": "function_call",
+                "name": "exec_command",
+                "call_id": "old",
+                "arguments": json.dumps({"cmd": "python worker.py > /tmp/render.log"}),
+            },
+            old,
+        ),
+        row(
+            "response_item",
+            {
+                "type": "function_call_output",
+                "call_id": "old",
+                "output": '{"session_id":41,"output":"working"}',
+            },
+            old,
+        ),
+        row("event_msg", {"type": "task_complete"}, old),
+    )
+    monkeypatch.setattr(model.ProcTable, "snapshot", classmethod(lambda cls: process_table()))
+    monkeypatch.setattr(model, "open_files", lambda pids: {500: [(10, str(path))]})
+    monkeypatch.setattr(codex, "process_threads", lambda pids: {510: "one"})
+    tracker = model.Tracker()
+    tracker.scan()
+    tracker.poll()
+    watch = tracker.watches["codex:one"]
+    assert [t.task_id for t in watch.running_bg_tasks()] == ["41"]
+    assert watch.current_proc.pid == 511
+    assert watch in tracker.active_sessions()
+
+
+def test_code_mode_does_not_infer_poll_target_from_printed_source(tmp_path, monkeypatch):
+    monkeypatch.setattr(codex, "CODEX_DIR", tmp_path)
+    path = rollout(tmp_path)
+    call(path, "exec_command", {"cmd": "sleep 60"})
+    result(path, '{"session_id":41,"output":"working"}')
+    code_call(path, """text("tools.write_stdin({session_id:41})"); text({exit_code:0});""")
+    code_result(path, "tools.write_stdin({session_id:41})", {"exit_code": 0, "output": "example"})
+    tracker = model.Tracker()
+    tracker.scan()
+    assert [t.task_id for t in tracker.watches["codex:one"].running_bg_tasks()] == ["41"]
+
+
+def test_command_record_without_timestamp_does_not_crash_or_imply_liveness(tmp_path, monkeypatch):
+    monkeypatch.setattr(codex, "CODEX_DIR", tmp_path)
+    path = rollout(tmp_path)
+    append(
+        path,
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "call_id": "bad",
+                "name": "exec_command",
+                "arguments": '{"cmd":"sleep 60"}',
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "bad",
+                "output": '{"session_id":41,"output":"working"}',
+            },
+        },
+    )
+    tracker = model.Tracker()
+    tracker.scan()
+    assert not tracker.errors()
+    assert not tracker.watches["codex:one"].running_bg_tasks()

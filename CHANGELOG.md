@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-06
+
+### Fixed
+
+- Codex commands polled through sequential `text(await tools.write_stdin(...))` calls now receive
+  their own output and exit result, including batches with multiple commands and code cells that
+  yield and later resume through `functions.wait`. Quoted object keys are supported; JavaScript
+  strings and comments are kept separate from actual calls. Scripts are never executed by wfwatch.
+- Printed source code and command output mentioning task protocol phrases no longer invent code
+  cells or process sessions. Lifecycle headers are read only from their protocol position.
+- An open rollout writer no longer keeps unobserved commands running for days. A command without
+  output or positively associated process evidence becomes stale after an hour, with no invented
+  exit code. Verified long-running child commands remain visible, including on the first scan.
+- Malformed command records without timestamps cannot crash discovery or imply live work.
+
 ## [0.3.1] - 2026-11-01
 
 ### Fixed
@@ -145,7 +160,8 @@ Claude Code 2.1.311.
   is restored after `q`, Ctrl+C, SIGTERM and SIGHUP.
 - `--version` and `python -m wfwatch`.
 
-[Unreleased]: https://github.com/zamirka/wfwatch/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/zamirka/wfwatch/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/zamirka/wfwatch/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/zamirka/wfwatch/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/zamirka/wfwatch/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/zamirka/wfwatch/compare/v0.2.1...v0.2.2

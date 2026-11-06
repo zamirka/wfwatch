@@ -7,19 +7,64 @@ silence cutoff for crashed/interrupted writers that did not record a completion 
 from __future__ import annotations
 
 import ast
-import contextlib
 import json
 import os
 import re
 import shlex
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import model as m
 
 CODEX_DIR = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+
+# A deliberately small, non-executing reader for sequential code-mode prints.
+# Anything outside this grammar keeps explicit result IDs but is not guessed.
+_JS_TOKEN = re.compile(
+    r"""("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)|"""
+    r"(//[^\n]*|/\*.*?\*/)|([\w$]+|[^\s])",
+    re.DOTALL,
+)
+
+
+def code_mode_calls(source: str) -> list[tuple[str, dict]] | None:
+    tokens = [match[1] or match[3] for match in _JS_TOKEN.finditer(source) if not match[2]]
+    calls, i = [], 0
+    while i < len(tokens):
+        if tokens[i] == ";":
+            i += 1
+            continue
+        if tokens[i : i + 5] != ["text", "(", "await", "tools", "."]:
+            return None
+        i += 5
+        if i + 2 >= len(tokens) or tokens[i + 1 : i + 3] != ["(", "{"]:
+            return None
+        name, args = tokens[i], {}
+        i += 3
+        depth = 1
+        while i < len(tokens) and depth:
+            token = tokens[i]
+            if depth == 1 and i + 3 < len(tokens) and tokens[i + 1] == ":" and tokens[i + 3] in (",", "}"):
+                try:
+                    key = ast.literal_eval(token) if token.startswith(("'", '"')) else token
+                    value = ast.literal_eval(tokens[i + 2])
+                except (ValueError, SyntaxError):
+                    pass
+                else:
+                    if key in ("cmd", "session_id", "cell_id") and isinstance(value, (str, int)):
+                        args[key] = value
+            if token in ("{", "[", "("):
+                depth += 1
+            elif token in ("}", "]", ")"):
+                depth -= 1
+            i += 1
+        if depth or tokens[i : i + 2] != [")", ")"]:
+            return None
+        i += 2
+        calls.append((name, args))
+    return calls or None
 
 
 def process_threads(pids: list[int]) -> dict[int, str]:
@@ -125,6 +170,8 @@ class CodexWatch(m.SessionWatch):
         self._task_pids: dict[str, dict[int, tuple[int | None, float]]] = {}
         self._commands: dict[str, str] = {}
         self._completed_commands: dict[str, tuple[dict, object]] = {}
+        self._cells: dict[str, list[tuple[str, dict]]] = {}
+        self._observed: dict[str, datetime] = {}
         self.writer_alive = False
         self.main.label = label or info.name
         # A long turn can push turn_context out of the activity tail. Seed its model
@@ -136,7 +183,7 @@ class CodexWatch(m.SessionWatch):
                 if isinstance(context, dict):
                     self.main.model = m._s(context.get("model")) or self.main.model
 
-    def poll(self, info=None) -> None:
+    def poll(self, info=None, *, expire=True) -> None:
         entries = self.main.tail.read()
         if self.main.tail.reset:
             self.main.tail.reset = False
@@ -149,26 +196,36 @@ class CodexWatch(m.SessionWatch):
             self._task_pids.clear()
             self._commands.clear()
             self._completed_commands.clear()
+            self._cells.clear()
+            self._observed.clear()
         for entry in entries:
             try:
                 self._feed(entry)
             except m.RECORD_ERRORS:
                 continue
         at = m.now()
-        if not self.writer_alive:
-            for task in self._running_own():
-                last = task.output_mtime or task.started
-                if last and (at - last).total_seconds() >= m.QUIET_MAX[m.BUSY]:
-                    task.status, task.ended = "stale", at
+        if expire:
+            self.expire_tasks(at)
         # File activity is not proof that an old turn is still working.
         self.info.alive = self.writer_alive or self.quiet_sec(at) < m.QUIET_MAX[m.BUSY]
         self.main.status = (
             m.RUNNING if (self.info.status == m.BUSY and self.info.alive) or self._running_own() else m.DONE
         )
         for child in self.children:
-            child.poll()
+            child.poll(expire=expire)
         self.bg_agents = [child.main for child in self.children if child.main.status == m.RUNNING]
         self.merge_events()
+
+    def expire_tasks(self, at: datetime) -> None:
+        for task in self._running_own():
+            last = max(
+                (t for t in (task.output_mtime, task.started, self._observed.get(task.task_id)) if t is not None),
+                default=None,
+            )
+            if last is None or (at - last).total_seconds() >= m.QUIET_MAX[m.BUSY]:
+                task.status = "stale"
+                task.ended = last + timedelta(seconds=m.QUIET_MAX[m.BUSY]) if last else at
+                task.log_path, task.log_line, task.log_mtime = "", "", None
 
     def _running_own(self) -> list[m.BgTask]:
         return [t for t in self._tasks.values() if t.status == m.RUNNING]
@@ -199,36 +256,71 @@ class CodexWatch(m.SessionWatch):
             return
         output = payload.get("output")
         blocks = output if isinstance(output, list) else [{"text": output}]
-        for block in blocks:
+        plan = list(args.get("_code_calls") or []) if name == "exec" else self._cells.get(m._s(args.get("cell_id")), [])
+        cell_id = ""
+        for index, block in enumerate(blocks):
             text = block.get("text") if isinstance(block, dict) else None
             if not isinstance(text, str):
                 continue
+            if index == 0 and name in ("exec", "wait"):
+                running = re.match(r"\AScript running with cell ID (\S+)(?:\n|$)", text)
+                finished = re.match(r"\AScript (completed|terminated)(?:\n|$)", text)
+                if running:
+                    cell_id = running[1]
+                    self._cells[cell_id] = plan
+                    self._apply_command(
+                        {"session_id": "cell:" + cell_id, "output": text.partition("Output:\n")[2]},
+                        name,
+                        args,
+                        started,
+                        ts,
+                    )
+                    continue
+                if finished:
+                    cell_id = m._s(args.get("cell_id"))
+                    if name == "wait" and cell_id:
+                        self._apply_command(
+                            {
+                                "session_id": "cell:" + cell_id,
+                                "exit_code": 0 if finished[1] == "completed" else 130,
+                                "output": text.partition("Output:\n")[2],
+                            },
+                            name,
+                            args,
+                            started,
+                            ts,
+                        )
+                    continue
+            result_name, result_args = plan.pop(0) if plan else (name, args)
             data = m._loads(text.encode("utf-8"))
             if not isinstance(data, dict):
                 data = {}
-                if match := re.search(r"Script running with cell ID (\S+)", text):
-                    data["session_id"] = "cell:" + match[1]
-                elif name == "wait" and args.get("cell_id") and re.search(r"Script (completed|terminated)", text):
-                    data["session_id"] = "cell:" + m._s(args["cell_id"])
-                    data["exit_code"] = 0 if "Script completed" in text else 130
-                if match := re.search(r"Process running with session ID (\d+)", text):
+                header = text.partition("Output:\n")[0]
+                if match := re.search(r"(?m)^Process running with session ID (\d+)", header):
                     data["session_id"] = match[1]
-                if match := re.search(r"Process exited with code (-?\d+)", text):
+                if match := re.search(r"(?m)^Process exited with code (-?\d+)", header):
                     data["exit_code"] = int(match[1])
                 if data:
                     data["output"] = text.partition("Output:\n")[2]
-            sid = str(data.get("session_id") or args.get("session_id") or "")
-            if not sid or not ("session_id" in data or "exit_code" in data):
-                continue
-            task = self._tasks.get(sid)
-            if task is None:
-                if "session_id" not in data:
-                    continue
-                task = self._tasks[sid] = m.BgTask(sid, m.first_line(args.get("cmd") or name, 120), started or ts)
-                self._commands[sid] = m._s(args.get("cmd"))
-            self._update_task(task, data.get("output"), data.get("exit_code"), ts)
-            if finished := self._completed_commands.pop(sid, None):
-                self._command_completed(*finished)
+            self._apply_command(data, result_name, result_args, started, ts)
+        if name == "wait" and cell_id and not re.match(r"\AScript running", m._s(blocks[0].get("text"))):
+            self._cells.pop(cell_id, None)
+
+    def _apply_command(self, data, name, args, started, ts) -> None:
+        if name not in ("exec", "exec_command", "write_stdin", "wait"):
+            return
+        sid = str(data.get("session_id") or args.get("session_id") or "")
+        if not sid or not ("session_id" in data or "exit_code" in data):
+            return
+        task = self._tasks.get(sid)
+        if task is None:
+            if "session_id" not in data:
+                return
+            task = self._tasks[sid] = m.BgTask(sid, m.first_line(args.get("cmd") or name, 120), started or ts)
+            self._commands[sid] = m._s(args.get("cmd"))
+        self._update_task(task, data.get("output"), data.get("exit_code"), ts)
+        if finished := self._completed_commands.pop(sid, None):
+            self._command_completed(*finished)
 
     @staticmethod
     def _update_task(task, output, exit_code, ts) -> None:
@@ -328,10 +420,7 @@ class CodexWatch(m.SessionWatch):
                 if short_name in ("exec_command", "write_stdin", "exec", "wait"):
                     command_args = args if isinstance(args, dict) else {}
                     if short_name == "exec" and isinstance(raw, str):
-                        literals = re.findall(r"""\bcmd\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')""", raw)
-                        if len(literals) == 1:
-                            with contextlib.suppress(ValueError, SyntaxError):
-                                command_args = {"cmd": ast.literal_eval(literals[0])}
+                        command_args = {"_code_calls": code_mode_calls(raw)}
                     self._calls[m._s(payload.get("call_id"))] = (short_name, command_args, ts)
                 if isinstance(args, dict):
                     text = next(
@@ -386,7 +475,7 @@ def scan(cache: dict[Path, CodexWatch], within_sec: float, procs: m.ProcTable | 
             watch.children.clear()
             watch.info.pid = writers.get(os.path.realpath(path), 0)
             watch.writer_alive = bool(watch.info.pid)
-            m.Tracker.guard(cache[path], cache[path].poll)
+            m.Tracker.guard(watch, lambda watch=watch: watch.poll(expire=False))
             if watch.parent_id:
                 parent = watch.parent_id.removeprefix("codex:")
                 parent_path = next((p for p in all_paths if p.name.endswith(f"-{parent}.jsonl")), None)
@@ -397,6 +486,11 @@ def scan(cache: dict[Path, CodexWatch], within_sec: float, procs: m.ProcTable | 
     for path in set(cache) - set(files):
         del cache[path]
     refresh_processes(cache, procs)
+    for watch in cache.values():
+        watch.expire_tasks(m.now())
+        watch.main.status = (
+            m.RUNNING if (watch.status == m.BUSY and watch.info.alive) or watch._running_own() else m.DONE
+        )
     watches = {w.session_id: w for w in cache.values()}
     for w in watches.values():
         w.subagents.clear()
@@ -461,6 +555,7 @@ def refresh_processes(cache: dict[Path, CodexWatch], procs: m.ProcTable | None) 
                 w._task_pids[task.task_id] = {
                     p.pid: (m.proc_start_ticks(p.pid), procs.taken - p.elapsed) for p in (shell, leaf)
                 }
+                w._observed[task.task_id] = m.now()
                 mapped[path, task.task_id] = (leaf, [shell, *live])
             elif task.task_id in w._task_pids and not any(
                 m.pid_alive(pid, datetime.fromtimestamp(started, timezone.utc), procs, ticks)

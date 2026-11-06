@@ -23,12 +23,22 @@ Audited 2026-11-01 against every change through `48ac073` (Claude releases 0.1.0
 - Claude workflow phase diagrams depend on the Claude Workflow plugin's journals and phase scripts, not on generic assistant messages. Their discovery and rendering are retained. Codex rollouts have no equivalent phase journal; Codex agents and commands appear in the shared session views.
 - Web-only ChatGPT conversations do not produce these local rollout files and are outside a local process monitor's data source.
 - Approval decisions are not reliably persisted as a live waiting-state record in rollouts. Busy/idle comes from turn events; wfwatch does not claim exact approval-state detection.
-- When OS evidence is unavailable, uncompleted turns and commands become stale after an hour of silence. A stale task has no invented exit code. A verified live writer keeps long silent work visible.
+- When OS evidence is unavailable, uncompleted turns and commands become stale after an hour of silence. A stale task has no invented exit code. A verified live writer preserves silent agent turns; a background command requires its own output or positively associated process evidence.
 - macOS SIP hides environments of system binaries. A fallback requires a unique command and launch-time match below the verified writer. Ambiguous candidates remain unassigned; this behavior has its own regression test.
-- A batch with multiple commands and no unambiguous command-to-result association retains independent task IDs and output; its initial label can be the wrapper name. Native command completion supplies the command and final output.
+- Sequential direct code-mode calls are correlated with their printed results, including across yields/waits. Unsupported JavaScript is never executed or guessed. A batch with multiple commands and no unambiguous command-to-result association retains independent task IDs and output; its initial label can be the wrapper name. Native command completion supplies the command and final output.
 
 ## Verification and release gates
 
 Tests use synthetic records and isolated Claude/Codex homes, never committed personal rollouts. New missing behavior was implemented through failing regressions and then passing tests. The real-process e2e uses an isolated writer process, a shell child and redirected output, with OS `ps`/`lsof` inspection and a real CLI subprocess.
 
 Before publishing, run the complete unit/e2e suite, explicit-encoding CI mode, Ruff, package build/metadata checks, clean-wheel CLI checks and tests from the source distribution. GitHub CI additionally covers Linux/macOS, Python 3.10–3.14, Rich 13 and unusual locale/terminal settings. Publish a versioned commit/tag only after local gates pass; verify GitHub CI and install the published GitHub revision outside this checkout.
+
+## 0.3.2 follow-up
+
+The November 6 investigation found 50 unconfirmed background tasks across four old sessions. Some
+commands had recorded exit results inside sequential code-mode polls; source-code search output
+also contained protocol-looking strings that had been interpreted as launches. Open writers had
+disabled the silence cutoff for these commands. Regressions now cover sequential poll mapping,
+continuations, printed protocol text, unobserved commands under open writers, malformed timestamps
+and preservation of positively observed long-running commands. The corrected local replay removed
+the old false activity without terminating any processes.

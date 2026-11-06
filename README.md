@@ -43,9 +43,13 @@ Tool session identifiers are never treated as OS process ids.
 The reader replays relevant rollout records on startup, then reads only appended data; the visible
 log is bounded. Completed sessions remain visible for 15 minutes. Without OS evidence, unfinished
 turns and commands become stale after an hour without activity. Process disappearance is shown as
-stale unless an exit result supplies the actual exit code. Exact approval/waiting state is not
-recorded reliably in rollouts. Web-only ChatGPT conversations are not local rollouts; Claude
-workflow phase diagrams still use the Claude workflow journals, which Codex does not generate.
+stale unless an exit result supplies the actual exit code. An open rollout file alone does not keep
+a background command running: after an hour of silence,
+that command needs positive child-process evidence. Sequential `text(await tools.exec_command(...))`
+and `text(await tools.write_stdin(...))` results are correlated in order, including across code-cell
+waits. Complex JavaScript is not evaluated or assigned speculative command/result associations.
+Exact approval/waiting state is not recorded reliably in rollouts. Web-only ChatGPT conversations
+are not local rollouts; Claude workflow phase diagrams still use the Claude workflow journals, which Codex does not generate.
 The rollout format is internal and may change between Codex versions.
 
 See the [historical parity audit](docs/codex-parity-audit.md) for the migrated fixes and tests.

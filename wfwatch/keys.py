@@ -1,7 +1,7 @@
 """Key presses without Enter (cbreak mode); Ctrl+C still interrupts.
 
-termios/tty exist only on POSIX, so they are imported when the keyboard is actually used:
---list, --once, --help and the tests work everywhere."""
+termios/tty exist only on POSIX and msvcrt only on Windows, so they are imported when the keyboard
+is actually used: --list, --once, --help and the tests work everywhere."""
 
 from __future__ import annotations
 
@@ -15,6 +15,13 @@ _PLAIN = {"\t": "tab", "\r": "enter", "\n": "enter"}
 _CSI = {"A": "up", "B": "down", "C": "right", "D": "left", "H": "home", "F": "end", "Z": "shift-tab"}
 _CSI_TILDE = {"1": "home", "7": "home", "4": "end", "8": "end", "5": "pgup", "6": "pgdn"}
 _SS3 = {"A": "up", "B": "down", "C": "right", "D": "left", "H": "home", "F": "end"}
+# msvcrt.getwch() returns an extended key as "\x00" or "\xe0" and a scan code: these become the
+# escape sequences a POSIX terminal sends, so decode_keys reads both
+_WIN_SCAN = {
+    "H": "\x1b[A", "P": "\x1b[B", "M": "\x1b[C", "K": "\x1b[D",
+    "G": "\x1b[H", "O": "\x1b[F", "I": "\x1b[5~", "Q": "\x1b[6~", "\x0f": "\x1b[Z",
+}  # fmt: skip
+WINDOWS = sys.platform == "win32"
 
 
 def _csi(params: str, final: str) -> str | None:
@@ -77,6 +84,23 @@ def decode_keys(data: str, final: bool = True) -> tuple[list[str], str]:
     return out, ""
 
 
+def win_keys(data: str) -> str:
+    """msvcrt.getwch() input as terminal input: extended keys (arrows, Home, PgUp, Shift+Tab) become
+    escape sequences, other extended keys (F-keys, Delete, Alt+key) are dropped. "\xe0" is also "à":
+    a lone one at the end is the letter."""
+    out = []
+    i, n = 0, len(data)
+    while i < n:
+        c = data[i]
+        if c in "\x00\xe0" and i + 1 < n:
+            out.append(_WIN_SCAN.get(data[i + 1], ""))
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 class Keys:
     ESC_WAIT = 0.03  # an escape sequence may arrive in pieces (ssh, tmux): wait this long for the rest
 
@@ -86,7 +110,7 @@ class Keys:
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
     def __enter__(self):
-        if self.fd is not None:
+        if self.fd is not None and not WINDOWS:  # the Windows console gives keys one by one anyway
             import termios
             import tty
 
@@ -102,6 +126,16 @@ class Keys:
                 termios.tcsetattr(self.fd, termios.TCSADRAIN, self._old)
 
     def _wait(self, timeout: float) -> bool:
+        if WINDOWS:
+            import msvcrt
+
+            end = time.monotonic() + timeout
+            while not msvcrt.kbhit():
+                left = end - time.monotonic()
+                if left <= 0:
+                    return False
+                time.sleep(min(0.01, left))  # select() does not work on a console handle
+            return True
         import select
 
         try:
@@ -111,6 +145,13 @@ class Keys:
         return bool(r)
 
     def _read(self) -> str:
+        if WINDOWS:
+            import msvcrt
+
+            data = msvcrt.getwch()
+            while msvcrt.kbhit():
+                data += msvcrt.getwch()
+            return win_keys(data)
         try:
             b = os.read(self.fd, 1024)
         except OSError:

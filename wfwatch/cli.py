@@ -385,7 +385,7 @@ def run_live(app: App, console: Console) -> int:
         raise _Terminated(signum)
 
     previous = {}
-    for name in ("SIGTERM", "SIGHUP"):
+    for name in ("SIGTERM", "SIGHUP", "SIGBREAK"):  # SIGBREAK: Ctrl+Break or a closed console window on Windows
         sig = getattr(signal, name, None)
         if sig is not None:
             with contextlib.suppress(ValueError, OSError):  # not the main thread

@@ -375,7 +375,7 @@ class _Terminated(BaseException):
 
 def run_live(app: App, console: Console) -> int:
     """The full-screen mode: redraw, re-read, handle keys until q, Ctrl+C or a termination signal."""
-    from .keys import Keys  # termios: POSIX only
+    from .keys import Keys  # termios on POSIX, msvcrt on Windows
 
     tracker = app.tracker
     got: list[int] = []
@@ -511,13 +511,9 @@ def _run(args: argparse.Namespace, console: Console) -> int:
         if pinned is None:
             console.print(tr("cli.not_found", run=args.run), markup=False, highlight=False)
             return 1
-    if not args.once:
-        if sys.platform == "win32":
-            _err(tr("cli.windows"))
-            return 2
-        if not (console.is_terminal and _isatty(console.file)):
-            _err(tr("cli.no_tty"))
-            return 2
+    if not args.once and not (console.is_terminal and _isatty(console.file)):
+        _err(tr("cli.no_tty"))
+        return 2
 
     tracker = model.Tracker(extra=pinned)
     app = App(tracker, args.all, pinned=pinned is not None, view="cards" if args.cards else "graph")

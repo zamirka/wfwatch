@@ -227,10 +227,6 @@ MESSAGES: dict[str, dict[str, Message]] = {
         "en": "Run “{run}” not found. Recent runs: wfwatch --list",
         "ru": "Запуск «{run}» не найден. Список: wfwatch --list",
     },
-    "cli.windows": {
-        "en": "the full-screen mode does not work on Windows – run wfwatch in WSL (or use --list and --once)",
-        "ru": "полноэкранный режим в Windows не работает – запустите wfwatch в WSL (или используйте --list и --once)",
-    },
     "cli.no_tty": {
         "en": "the full-screen mode needs a terminal; to print one frame to a file or a pipe, use --once",
         "ru": "полноэкранному режиму нужен терминал; чтобы вывести один кадр в файл или pipe, используйте --once",

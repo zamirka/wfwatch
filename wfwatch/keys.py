@@ -148,9 +148,12 @@ class Keys:
         if WINDOWS:
             import msvcrt
 
-            data = msvcrt.getwch()
-            while msvcrt.kbhit():
-                data += msvcrt.getwch()
+            data = ""
+            while not data or msvcrt.kbhit():
+                c = msvcrt.getwch()
+                if c in "\x00\xe0":  # the scan code is already buffered, but kbhit() does not see it
+                    c += msvcrt.getwch()
+                data += c
             return win_keys(data)
         try:
             b = os.read(self.fd, 1024)

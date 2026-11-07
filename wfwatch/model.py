@@ -919,6 +919,8 @@ def pid_alive(
 
 
 def _win_pid_alive(pid: int) -> bool:  # pragma: no cover – Windows only; os.kill(pid, 0) sends Ctrl+C there
+    if not 0 < pid < 2**32:  # a DWORD: anything else would overflow ctypes and land in "best effort"
+        return False
     try:
         import ctypes
 

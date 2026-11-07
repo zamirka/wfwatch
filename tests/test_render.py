@@ -22,6 +22,7 @@ from wfwatch.widgets import _RUN_STATES, _SESSION_STATES, Sized, State
 
 
 def render(renderable, width=120, height=None, **kw) -> str:
+    kw.setdefault("legacy_windows", False)  # on Windows Rich takes a StringIO for an old console: ASCII boxes
     con = Console(record=True, width=width, height=height, file=io.StringIO(), **kw)
     con.print(renderable)
     return con.export_text().rstrip("\n")

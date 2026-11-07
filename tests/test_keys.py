@@ -126,3 +126,21 @@ def test_no_termios_needed_outside_full_screen(tmp_path):
         [sys.executable, "-c", code], capture_output=True, encoding="utf-8", env=env, timeout=60, check=False
     )
     assert r.returncode == 0, r.stderr
+
+
+def test_windows_arrow_whose_scan_code_kbhit_does_not_see(monkeypatch):
+    """getwch() returns "\xe0" and then the scan code; kbhit() is false in between, but the code is there."""
+    import types
+
+    from wfwatch import keys as keys_mod
+
+    pending = ["\xe0", "H", "q"]
+    fake = types.SimpleNamespace(
+        getwch=lambda: pending.pop(0),
+        kbhit=lambda: len(pending) > 1 and pending[0] != "H",  # false right after the prefix
+    )
+    monkeypatch.setitem(sys.modules, "msvcrt", fake)
+    monkeypatch.setattr(keys_mod, "WINDOWS", True)
+    k = Keys()
+    assert decode_keys(k._read()) == (["up"], "")
+    assert decode_keys(k._read()) == (["q"], "")

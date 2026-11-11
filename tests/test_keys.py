@@ -5,7 +5,7 @@ import threading
 
 import pytest
 
-from wfwatch.keys import Keys, decode_keys
+from wfwatch.keys import Keys, decode_keys, win_keys
 
 
 @pytest.mark.parametrize(
@@ -54,11 +54,36 @@ def test_decode_keys_keeps_an_incomplete_sequence(data):
     assert decode_keys("a" + data, final=False) == (["a"], data)
 
 
-pty = pytest.importorskip("pty")
+@pytest.mark.parametrize(
+    ("data", "keys"),
+    [
+        ("\xe0H", ["up"]),
+        ("\xe0P", ["down"]),
+        ("\xe0M", ["right"]),
+        ("\xe0K", ["left"]),
+        ("\x00H", ["up"]),  # the numeric keypad
+        ("\xe0G", ["home"]),
+        ("\xe0O", ["end"]),
+        ("\xe0I", ["pgup"]),
+        ("\xe0Q", ["pgdn"]),
+        ("\x00\x0f", ["shift-tab"]),
+        # F-keys, Delete, Alt+key: dropped whole, the scan code is not a key press
+        ("\x00;", []),
+        ("\xe0S", []),
+        ("\x00\x10", []),
+        ("\x1b", ["esc"]),
+        ("\r", ["enter"]),
+        ("q\xe0Hй", ["q", "up", "й"]),
+        ("\xe0", ["\xe0"]),  # a lone one is the letter à
+    ],
+)
+def test_windows_console_keys(data, keys):
+    assert decode_keys(win_keys(data)) == (keys, "")
 
 
 @pytest.fixture
 def keys():
+    pty = pytest.importorskip("pty")  # POSIX only; the tests above and below run on Windows too
     master, slave = pty.openpty()
     k = Keys()
     k.fd = slave
@@ -101,3 +126,21 @@ def test_no_termios_needed_outside_full_screen(tmp_path):
         [sys.executable, "-c", code], capture_output=True, encoding="utf-8", env=env, timeout=60, check=False
     )
     assert r.returncode == 0, r.stderr
+
+
+def test_windows_arrow_whose_scan_code_kbhit_does_not_see(monkeypatch):
+    """getwch() returns "\xe0" and then the scan code; kbhit() is false in between, but the code is there."""
+    import types
+
+    from wfwatch import keys as keys_mod
+
+    pending = ["\xe0", "H", "q"]
+    fake = types.SimpleNamespace(
+        getwch=lambda: pending.pop(0),
+        kbhit=lambda: len(pending) > 1 and pending[0] != "H",  # false right after the prefix
+    )
+    monkeypatch.setitem(sys.modules, "msvcrt", fake)
+    monkeypatch.setattr(keys_mod, "WINDOWS", True)
+    k = Keys()
+    assert decode_keys(k._read()) == (["up"], "")
+    assert decode_keys(k._read()) == (["q"], "")

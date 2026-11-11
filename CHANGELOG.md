@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Native Windows support: the full-screen mode reads keys from the Windows console instead of
+  asking for WSL. Process details of background commands stay macOS/Linux only.
+
+### Fixed
+
+- `--list` and `--once` written to a file or a pipe on Windows no longer fail on the first box
+  drawing character: they write UTF-8.
+- A process id out of range is no longer reported as a running process on Windows.
+
 ## [0.3.2] - 2026-11-06
 
 ### Fixed

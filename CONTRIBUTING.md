@@ -5,7 +5,8 @@ first is the easiest way to agree on a bigger change.
 
 ## Setting up
 
-You need Python 3.10 or newer on macOS or Linux (on Windows, work inside WSL).
+You need Python 3.10 or newer on macOS, Linux or Windows (there, use `.venv\Scripts\` instead of
+`.venv/bin/`).
 
 ```bash
 git clone https://github.com/zamirka/wfwatch

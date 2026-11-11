@@ -330,7 +330,7 @@ def test_timed_out_foreground_command_becomes_a_background_task(claude_home):
     """A Bash call still running when its timeout hits is moved to the background by Claude Code."""
     h = claude_home
     h.session("s-to", status="busy")
-    out = model.CLAUDE_TMP / f"claude-{os.getuid()}" / "-p" / "s-to" / "tasks" / "bT.output"
+    out = model.CLAUDE_TMP / f"claude-{model._uid()}" / "-p" / "s-to" / "tasks" / "bT.output"
     path = h.transcript(
         "s-to",
         h.assistant(
@@ -421,8 +421,12 @@ def test_output_files_are_read_only_where_claude_code_keeps_them(claude_home, tm
     assert not model.output_allowed(tasks.joinpath(*[".."] * 6, "x.output"))  # resolves outside CLAUDE_DIR
     target = tmp_path.parent / f"{tmp_path.name}-target.output"
     target.write_text("x\n", encoding="utf-8")
-    (tasks / "link.output").symlink_to(target)
-    assert not model.output_allowed(tasks / "link.output")  # a symlink pointing outside
+    try:  # Windows allows symlinks only in developer mode or to administrators
+        (tasks / "link.output").symlink_to(target)
+    except OSError:
+        pass
+    else:
+        assert not model.output_allowed(tasks / "link.output")  # a symlink pointing outside
 
     # a task id is data too: "../" in it leads nowhere
     h = claude_home

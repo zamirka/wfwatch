@@ -68,11 +68,11 @@ def test_full_screen_needs_a_terminal(claude_home, capsys, monkeypatch, env):
     assert "--once" in capsys.readouterr().err
 
 
-def test_full_screen_on_windows_points_to_wsl(claude_home, capsys, monkeypatch):
+def test_full_screen_on_windows_is_not_refused(claude_home, capsys, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     assert cli.main([]) == 2
-    assert "WSL" in capsys.readouterr().err
-    assert cli.main(["--once"]) == 0  # the rest works
+    assert "--once" in capsys.readouterr().err  # stdout is captured: only the missing terminal stops it
+    assert cli.main(["--once"]) == 0
 
 
 def test_ctrl_c_before_the_full_screen_has_no_traceback(claude_home, monkeypatch):

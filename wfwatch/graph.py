@@ -867,6 +867,34 @@ SESSION_FANS = [
 ]
 
 
+class SessionPlanSidebar(GraphView):
+    """The workflow phase-column layout, using only explicitly recorded checklist states."""
+
+    def __init__(self, session, at, t, animate):
+        self.s, self.at, self.t, self.animate = session, at, t, animate
+        self.steps = session.plan_steps
+        self.live = session.status == BUSY
+        self.selected_index = next(
+            (i for i, step in enumerate(self.steps) if step.status == "in_progress"),
+            next((i for i, step in enumerate(self.steps) if step.status == "pending"), len(self.steps) - 1),
+        )
+
+    def items(self) -> list[Item]:
+        statuses = {"completed": DONE, "in_progress": RUNNING, "pending": PENDING}
+        return [Item("phase", statuses[step.status], n=i + 1) for i, step in enumerate(self.steps)]
+
+    def side_item(self, c: Canvas, it: Item, y: int, current: bool) -> None:
+        color = phase_color(it.status)
+        c.put(2, y, status_icon(it.status), bold(color))
+        c.text(4, y, f"{it.n}. {self.steps[it.n - 1].step}", SIDE_W - 6, bold(color) if current else color)
+        if current:
+            c.put(1, y, "▸", bold(color))
+
+    def stats(self) -> list[tuple[str, str]]:
+        done = sum(step.status == "completed" for step in self.steps)
+        return [(tr("session.plan", progress=f"{done}/{len(self.steps)}"), "")]
+
+
 class SessionGraph(Diagram):
     """An ordinary session: its block, its background commands, its subagents fanned out,
     its latest actions on the left."""
@@ -882,6 +910,7 @@ class SessionGraph(Diagram):
         self.p = painter
         self.s: SessionWatch = painter.s
         self.live = self.s.status == BUSY
+        self.checklist = SessionPlanSidebar(self.s, at, t, animate) if getattr(self.s, "plan_steps", ()) else None
 
     def __rich_console__(self, console, options):
         w = options.max_width
@@ -900,7 +929,8 @@ class SessionGraph(Diagram):
         if w < MIN_W:
             return None
         side = w >= SIDEBAR_MIN_W
-        cw = w - (self.ACTIONS_W + 4 if side else 0)
+        sw = SIDE_W if self.checklist else self.ACTIONS_W
+        cw = w - (sw + 4 if side else 0)
         subs = list(self.s.subagents.values())
         bg = len(self.bg_tasks())
         for lay in (
@@ -941,7 +971,8 @@ class SessionGraph(Diagram):
         c.put(0, 2, "─" * w, C.dim)
 
         side = w >= SIDEBAR_MIN_W
-        x0 = self.ACTIONS_W + 4 if side else 0
+        sw = SIDE_W if self.checklist else self.ACTIONS_W
+        x0 = sw + 4 if side else 0
         cw = w - x0
         cx = x0 + cw // 2
         node_w = min(cw - 4, 60)
@@ -950,12 +981,24 @@ class SessionGraph(Diagram):
         c.box(nx, y, node_w, lay.node_h, state.color, heavy=True)
         iw, ix = node_w - 4, nx + 2
         st = session_state_text(s, self.at, self.t, self.animate)
-        c.parts(
-            ix,
-            y + 1,
-            styled("node.session", C.dim, session=(f"{SESSION_TAG} {s.name}", bold(state.color))),
-            iw - st.cell_len - 1,
-        )
+        if self.checklist:
+            selected = self.checklist.selected_index
+            step = self.checklist.steps[selected]
+            item = self.checklist.items()[selected]
+            c.text(
+                ix,
+                y + 1,
+                f"{status_icon(item.status)} {selected + 1}. {step.step}",
+                iw - st.cell_len - 1,
+                bold(phase_color(item.status)),
+            )
+        else:
+            c.parts(
+                ix,
+                y + 1,
+                styled("node.session", C.dim, session=(f"{SESSION_TAG} {s.name}", bold(state.color))),
+                iw - st.cell_len - 1,
+            )
         c.rich(ix + iw - st.cell_len, y + 1, st)
         c.parts(
             ix,
@@ -991,7 +1034,11 @@ class SessionGraph(Diagram):
             note = tr("session.alone" if s.status == BUSY else self.EMPTY)
             c.text(x0, y + 1, note, cw, C.dim, "center")
         if side:
-            self.actions(c, h, nx, anchor, flows)
+            if self.checklist:
+                ci = self.checklist.selected_index
+                self.checklist.sidebar(c, self.checklist.items(), ci, {ci: anchor}, h, nx, flows)
+            else:
+                self.actions(c, h, nx, anchor, flows)
         for path, col, off in flows:
             c.flow(path, self.t, col, off)
         return c

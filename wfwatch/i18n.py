@@ -179,6 +179,7 @@ MESSAGES: dict[str, dict[str, Message]] = {
     "stats.out": {"en": "out", "ru": "out"},
     "stats.time": {"en": "time", "ru": "время"},
     # ---- a session ----
+    "session.plan": {"en": "Plan · {progress}", "ru": "План · {progress}"},
     "session.subagents": {"en": "session subagents · {progress}", "ru": "субагенты сессии · {progress}"},
     "session.no_subagents": {"en": "no subagents", "ru": "субагентов нет"},
     "session.alone": {

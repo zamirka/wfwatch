@@ -13,12 +13,20 @@ import re
 import shlex
 import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import model as m
 
 CODEX_DIR = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+
+
+@dataclass(frozen=True)
+class PlanStep:
+    step: str
+    status: str
+
 
 # A deliberately small, non-executing reader for sequential code-mode prints.
 # Anything outside this grammar keeps explicit result IDs but is not guessed.
@@ -173,6 +181,8 @@ class CodexWatch(m.SessionWatch):
         self._cells: dict[str, list[tuple[str, dict]]] = {}
         self._observed: dict[str, datetime] = {}
         self.writer_alive = False
+        self.plan_steps: list[PlanStep] = []
+        self.plan_explanation = ""
         self.main.label = label or info.name
         # A long turn can push turn_context out of the activity tail. Seed its model
         # from a bounded header; later context records still override it normally.
@@ -198,6 +208,8 @@ class CodexWatch(m.SessionWatch):
             self._completed_commands.clear()
             self._cells.clear()
             self._observed.clear()
+            self.plan_steps.clear()
+            self.plan_explanation = ""
         for entry in entries:
             try:
                 self._feed(entry)
@@ -351,6 +363,22 @@ class CodexWatch(m.SessionWatch):
         events = self._own_events + [e for child in self.children for e in child._own_events]
         self.events = sorted(events, key=lambda e: e.ts)[-300:]
 
+    def _plan_update(self, args: object) -> None:
+        if not isinstance(args, dict) or not isinstance(args.get("plan"), list):
+            return
+        steps = []
+        for item in args["plan"]:
+            if not isinstance(item, dict) or not isinstance(item.get("step"), str):
+                return
+            if item.get("status") not in ("pending", "in_progress", "completed"):
+                return
+            step = m.first_line(item["step"], 500)
+            if not step:
+                return
+            steps.append(PlanStep(step, item["status"]))
+        self.plan_steps = steps
+        self.plan_explanation = m.first_line(args.get("explanation"), 500)
+
     def _feed(self, entry: dict) -> None:
         payload = entry.get("payload")
         if not isinstance(payload, dict):
@@ -373,6 +401,7 @@ class CodexWatch(m.SessionWatch):
                     "turn_aborted",
                     "agent_message",
                     "user_message",
+                    "plan_update",
                 )
             )
             or (
@@ -388,6 +417,8 @@ class CodexWatch(m.SessionWatch):
             self.main.model = m._s(payload.get("model")) or self.main.model
             self.info.cwd = m._s(payload.get("cwd")) or self.info.cwd
         elif kind == "event_msg":
+            if typ == "plan_update":
+                self._plan_update(payload)
             if typ == "item_completed":
                 self._command_completed(payload.get("item"), ts)
             if typ in ("task_started", "turn_started", "user_message"):
@@ -417,6 +448,8 @@ class CodexWatch(m.SessionWatch):
                 except (ValueError, RecursionError):
                     args = None
                 short_name = name.rsplit(".", 1)[-1]
+                if name in ("update_plan", "functions.update_plan"):
+                    self._plan_update(args)
                 if short_name in ("exec_command", "write_stdin", "exec", "wait"):
                     command_args = args if isinstance(args, dict) else {}
                     if short_name == "exec" and isinstance(raw, str):

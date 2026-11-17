@@ -33,6 +33,12 @@ under their root session and a shared activity log. Background commands from `ex
 `write_stdin` and `functions.exec` appear with their output and exit status, even after the agent
 finishes its turn. Yielded code cells remain visible until `functions.wait` finishes them.
 
+When Codex records an explicit checklist through `update_plan` or a `plan_update` event,
+wfwatch draws its stages in the workflow phase column, linked to the current session block. The overview shows
+completed/total steps and the current step. Plans are restored from the rollout on startup;
+press `v` for cards and use PgUp/PgDn to browse long plans. Each child thread keeps its own plan.
+No plan is inferred from messages or commands, and ending a turn does not complete its steps.
+
 On macOS and Linux, wfwatch uses the process holding the rollout open for writing to keep long,
 silent agents visible. When a child command can be associated with its thread, it also shows its
 busiest process, CPU usage and the last line of a redirected stdout/stderr file. Association uses

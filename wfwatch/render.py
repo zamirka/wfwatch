@@ -682,6 +682,27 @@ def layout(parts: list[tuple[RenderableType, int | None]]) -> Layout:
 # ---- a session ----
 
 
+def session_plan_summary(s: SessionWatch) -> Text | None:
+    steps = getattr(s, "plan_steps", ())
+    if not steps:
+        return None
+    done = sum(step.status == "completed" for step in steps)
+    title = tr("session.plan", progress=f"{done}/{len(steps)}")
+    current = next((step.step for step in steps if step.status == "in_progress"), "")
+    return Text.assemble(
+        (title, bold(C.blue)), (" · " + current if current else "", C.text), no_wrap=True, overflow="ellipsis"
+    )
+
+
+def session_plan_panel(s: SessionWatch, start: int = 0, limit: int = 5) -> Panel:
+    steps = s.plan_steps
+    lines = []
+    for step in steps[start : start + limit]:
+        icon, color = {"completed": ("✓", C.green), "in_progress": ("●", C.blue), "pending": ("○", C.dim)}[step.status]
+        lines.append(Text(f"{icon} {step.step}", style=color, no_wrap=True, overflow="ellipsis"))
+    return Panel(Group(*lines), title=session_plan_summary(s), title_align="left", border_style=C.blue, box=box.ROUNDED)
+
+
 class SessionPainter:
     """The detailed view of an ordinary session: its block, background commands, subagents, latest actions."""
 
@@ -740,6 +761,9 @@ class SessionPainter:
         (running first), so every one of them can be scrolled to."""
         s = self.s
         out: list[Section] = []
+        steps = getattr(s, "plan_steps", ())
+        for start in range(0, len(steps), 5):
+            out.append(Section(session_plan_panel(s, start)))
         tasks = s.recent_bg_tasks(at)
         if tasks:
             lines = [
@@ -902,7 +926,11 @@ class Overview:
 
     @staticmethod
     def _base(kind: str, obj) -> int:
-        return 4 + (1 if kind == "session" and obj.running_bg_tasks() else 0)
+        return (
+            4
+            + (1 if kind == "session" and obj.running_bg_tasks() else 0)
+            + (1 if kind == "session" and getattr(obj, "plan_steps", ()) else 0)
+        )
 
     @staticmethod
     def _detail(kind: str, obj) -> int:
@@ -1022,6 +1050,8 @@ class Overview:
                 overflow="ellipsis",
             ),
         ]
+        if (summary := session_plan_summary(s)) is not None:
+            lines.append(summary)
         bg = s.running_bg_tasks()
         if bg:
             lines.append(text_of(bg_parts(s, bg[0], at)))

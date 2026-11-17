@@ -348,7 +348,12 @@ def test_a_grandchild_report_finishes_it_from_its_parent(opencode_home: OpenCode
     h = opencode_home
     h.session("ses_root", title="Parent", busy=h.at(seconds=10))
     h.session("ses_child", parent="ses_root", title="Middle", busy=h.at(minutes=5), idle=h.at(minutes=4))
-    h.session("ses_grand", parent="ses_child", title="Deep", busy=h.at(minutes=5), idle=h.at(minutes=4))
+    h.session("ses_grand", parent="ses_child", title="Deep", busy=h.at(minutes=2), idle=h.at(minutes=6))
+    tracker = model.Tracker()
+    tracker.scan()
+    deep = next(a for a in tracker.watches["opencode:ses_root"].subagents.values() if a.label == "Deep")
+    assert deep.status == model.RUNNING  # the child writes, its report is not in yet
+
     h.message(
         "ses_child",
         kind="synthetic",
@@ -356,7 +361,6 @@ def test_a_grandchild_report_finishes_it_from_its_parent(opencode_home: OpenCode
         text='<subagent sessionID="ses_grand" state="completed" description="Deep">\nAll good\n</subagent>',
         description="Deep",
     )
-    tracker = model.Tracker()
     tracker.scan()
     deep = next(a for a in tracker.watches["opencode:ses_root"].subagents.values() if a.label == "Deep")
     assert deep.status == model.DONE
@@ -437,3 +441,44 @@ def test_the_shell_directory_is_listed_once_per_change(opencode_home: OpenCodeHo
     h.shell_output("sh_2", "y\n")
     tracker.poll()
     assert len(walked) == 2
+
+
+def test_a_failed_query_is_reported_instead_of_being_hidden(opencode_home: OpenCodeHome, monkeypatch):
+    """A watch that cannot read its database must say so: a card frozen on old data looks alive."""
+    from wfwatch.opencode.store import Store, StoreError
+
+    h = opencode_home
+    h.session("ses_a", title="A")
+    tracker = model.Tracker()
+    tracker.scan()
+    watch = tracker.watches["opencode:ses_a"]
+
+    def broken(self, ids):
+        raise StoreError("database is locked")
+
+    monkeypatch.setattr(Store, "jobs", broken)
+    tracker.poll()
+    assert "locked" in watch.error
+    assert any("locked" in e for e in tracker.errors())
+
+
+def test_a_child_process_is_not_counted_twice_under_the_root(opencode_home: OpenCodeHome, monkeypatch):
+    """The root shows its children's commands; their processes must reach it through one path only."""
+    h = opencode_home
+    h.session("ses_root", title="Parent", busy=h.at(seconds=10))
+    h.session("ses_child", parent="ses_root", title="Worker", busy=h.at(minutes=2), idle=h.at(minutes=6))
+    h.job("sh_1", "ses_child", command="python worker.py", title="Render frames")
+    out = h.shell_output("sh_1", "frame 12\n")
+    table = model.ProcTable.parse(
+        "500 1 0.0 05:00:00 /usr/bin/opencode serve\n"
+        f"510 500 0.0 01:00:00 /bin/zsh -c python worker.py > {out}\n"
+        "511 510 87.0 00:59:00 python worker.py\n",
+        model.now().timestamp(),
+    )
+    monkeypatch.setattr(model.ProcTable, "snapshot", classmethod(lambda cls: table))
+    monkeypatch.setattr(model, "open_files", lambda pids: {510: [(10, str(out))], 511: [(1, str(out))]})
+    tracker = model.Tracker()
+    tracker.scan()
+    root = tracker.watches["opencode:ses_root"]
+    assert [p.pid for p in root.procs] == [511]
+    assert [t.task_id for t in root.running_bg_tasks()] == ["sh_1"]

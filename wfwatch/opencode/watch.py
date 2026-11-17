@@ -92,9 +92,11 @@ class OpenCodeWatch(m.SessionWatch):
     # ---- polling ----
 
     def poll(self, info=None, *, store: Store | None = None) -> None:
+        # A StoreError is raised, not swallowed: the caller's guard records it on this watch, where
+        # the error is shown, instead of the card silently keeping its old state.
         own = store is None
+        store = store or Store(self.db_path)
         try:
-            store = store or Store(self.db_path)
             fresh = store.sessions_by_ids([self.row.id])
             if fresh:
                 self.update(fresh[0])
@@ -110,11 +112,9 @@ class OpenCodeWatch(m.SessionWatch):
             self.poll_bg()  # a file being written is the freshest evidence a task still runs
             self._expire()
             self.error = ""
-        except StoreError as e:
-            self.error = str(e)
         finally:
             if own:
-                store and store.close()
+                store.close()
 
     def _messages(self, store: Store) -> list[MessageRow]:
         if self._since is None:
@@ -338,8 +338,10 @@ def refresh_processes(cache: dict[str, OpenCodeWatch], procs: m.ProcTable | None
             owners.setdefault(os.path.realpath(name), set()).add(pid)
     for watch in cache.values():
         watch.procs = []
-        for task in watch.running_bg_tasks():
-            if not task.output_path:
+        # Only this session's own commands: the running ones of its children belong to them, and
+        # `scan()` gathers them for the root once.
+        for task in watch.bg_map().values():
+            if task.status != m.RUNNING or not task.output_path:
                 continue
             pids = owners.get(os.path.realpath(task.output_path), set())
             leaf = _busiest_leaf(procs, pids, me)

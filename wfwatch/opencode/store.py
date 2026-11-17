@@ -28,6 +28,7 @@ _REQUIRED_COLUMNS = {
     "project": ("id", "worktree"),
     "session_v2": (
         "id",
+        "project_id",
         "parent_id",
         "title",
         "slug",
@@ -55,6 +56,7 @@ _REQUIRED_COLUMNS = {
         "title",
         "status",
         "output",
+        "error",
         "recovery",
         "time_created",
         "time_updated",
@@ -228,8 +230,17 @@ class Store:
     # ---- queries ----
 
     def recent_sessions(self, since: datetime) -> list[SessionRow]:
-        """Sessions changed since `since`, newest last; archived ones are left out."""
-        rows = self._sessions("s.time_updated >= ? and s.time_archived is null", (int(since.timestamp() * 1000),))
+        """Sessions changed since `since`, newest last; archived ones are left out.
+
+        A message row is rewritten while the agent streams; the session row usually follows it, but
+        a session that has been streaming for hours must not fall out of the window for that reason.
+        """
+        at = int(since.timestamp() * 1000)
+        rows = self._sessions(
+            "s.time_archived is null and (s.time_updated >= ? or s.id in"
+            " (select m.session_id from session_message m where m.time_updated >= ?))",
+            (at, at),
+        )
         return sorted(rows, key=lambda r: (r.created or since, r.id))
 
     def sessions_by_ids(self, ids: Iterable[str]) -> list[SessionRow]:

@@ -1092,20 +1092,22 @@ def _uid() -> int:
     return os.getuid() if hasattr(os, "getuid") else 0
 
 
-def output_allowed(p: str | Path) -> bool:
+def output_allowed(p: str | Path, roots: tuple[Path, ...] | None = None, suffix: str = ".output") -> bool:
     """May this background command output file be read? Only where such files are kept: under
     CLAUDE_TMP/claude-<uid>/ (where Claude Code writes them) or under CLAUDE_DIR, with the
     .output suffix, symlinks resolved. The path comes from a transcript, that is from data:
-    wfwatch must not be made to read any other file."""
+    wfwatch must not be made to read any other file. Another reader (OpenCode) passes its own
+    roots and suffix."""
     try:
         path = Path(p)
         if not path.is_absolute():
             return False
         real = path.resolve()
-        roots = ((CLAUDE_TMP / f"claude-{_uid()}").resolve(), CLAUDE_DIR.resolve())
+        roots = roots if roots is not None else (CLAUDE_TMP / f"claude-{_uid()}", CLAUDE_DIR)
+        allowed = tuple(r.resolve() for r in roots)
     except (OSError, ValueError, RuntimeError):
         return False
-    return real.suffix == ".output" and any(real.is_relative_to(r) for r in roots)
+    return real.suffix == suffix and any(real.is_relative_to(r) for r in allowed)
 
 
 def _unescape(raw: bytes) -> str:
@@ -1352,6 +1354,11 @@ class SessionLog:
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[@-_]")
 
 
+def without_ansi(text: str) -> str:
+    """Text without the terminal control sequences of a command's output."""
+    return _ANSI.sub("", text)
+
+
 def last_output_line(path: Path, max_bytes: int = 8192) -> tuple[str, int, datetime] | None:
     """(last non-empty line without ANSI sequences, size, mtime) of a command output file.
     Only a regular file is read: a pipe in its place must not block (hence O_NONBLOCK)."""
@@ -1370,7 +1377,7 @@ def last_output_line(path: Path, max_bytes: int = 8192) -> tuple[str, int, datet
     except (OSError, ValueError):
         return None
     mtime = datetime.fromtimestamp(st.st_mtime, timezone.utc)
-    text = _ANSI.sub("", data.decode("utf-8", "replace"))
+    text = without_ansi(data.decode("utf-8", "replace"))
     for ln in reversed(re.split(r"[\r\n]", text)):
         ln = clean(ln).strip()
         if ln:
@@ -1726,12 +1733,17 @@ class SessionWatch:
     def current_proc(self) -> Proc | None:
         return self.procs[0] if self.procs else None
 
+    def bg_map(self) -> dict[str, BgTask]:
+        """Background commands of this kind of session, by id. A reader with its own source of
+        jobs (Codex, OpenCode) overrides it instead of the properties built on it."""
+        return self.log.bg
+
     @property
     def bg_tasks(self) -> list[BgTask]:
-        return list(self.log.bg.values())
+        return list(self.bg_map().values())
 
     def running_bg_tasks(self) -> list[BgTask]:
-        return [t for t in self.log.bg.values() if t.status == RUNNING]
+        return [t for t in self.bg_map().values() if t.status == RUNNING]
 
     def in_background(self) -> bool:
         """A background command or agent runs. The registry also knows of commands that the transcript
@@ -1743,7 +1755,7 @@ class SessionWatch:
         at = at or now()
         return [
             t
-            for t in self.log.bg.values()
+            for t in self.bg_map().values()
             if t.status == RUNNING or (t.ended is not None and (at - t.ended).total_seconds() < within)
         ]
 
@@ -1809,15 +1821,15 @@ class SessionWatch:
     def poll_bg(self) -> None:
         """Background commands: started, finished, their last output line."""
         proc_start = self.info.started_at
-        for t in self.log.bg.values():
+        for t in self.bg_map().values():
             if t.status == RUNNING and proc_start and t.started and t.started < proc_start:
                 t.status = STALE  # started by an earlier process of this session: no notification will come
             if t._final:
                 continue
             path = self.bg_output(t)
             try:
-                if not output_allowed(path):  # a task id is data too: "../" in it must lead nowhere
-                    raise ValueError(path)
+                if not output_allowed(path, self.output_roots(), self.output_suffix()):
+                    raise ValueError(path)  # a task id is data too: "../" in it must lead nowhere
                 st = path.stat()
                 key = (st.st_size, st.st_mtime)
             except (OSError, ValueError):
@@ -1852,6 +1864,13 @@ class SessionWatch:
     def bg_output(self, t: BgTask) -> Path:
         """The .output of a background command: as the transcript gave it, or where it should be."""
         return Path(t.output_path) if t.output_path else self.output_path(t.task_id)
+
+    def output_roots(self) -> tuple[Path, ...]:
+        """Where this kind of session keeps the output files of its background commands."""
+        return (CLAUDE_TMP / f"claude-{_uid()}", CLAUDE_DIR)
+
+    def output_suffix(self) -> str:
+        return ".output"
 
     def output_path(self, task_id: str) -> Path:
         """Where Claude Code writes the output of a background command."""
@@ -1905,6 +1924,11 @@ def glob_escape(s: str) -> str:
     return re.sub(r"([*?\[])", r"[\1]", s)
 
 
+def foreign_session(session_id: str) -> bool:
+    """A session another adapter owns (Codex, OpenCode): its processes and output files are its own."""
+    return session_id.startswith(("codex:", "opencode:"))
+
+
 class Tracker:
     """Runs being tracked (all running plus recently finished) and live sessions, across all projects."""
 
@@ -1923,6 +1947,7 @@ class Tracker:
         self._missing: dict[str, int] = {}
         self._transcripts: dict[str, Path] = {}
         self._codex: dict = {}
+        self._opencode: dict = {}
 
     def log(self, transcript: Path) -> SessionLog:
         if transcript not in self.logs:
@@ -1958,11 +1983,17 @@ class Tracker:
         keep = set(dirs)
         for d in [d for d, r in self.runs.items() if d not in keep and r.state != "running"]:
             del self.runs[d]
-        from . import codex
+        from . import codex, opencode
 
         codex_watches = codex.scan(self._codex, self.TRACK_SEC, self.procs)
         self.sessions.update({sid: w.info for sid, w in codex_watches.items()})
         self.watches.update(codex_watches)
+        opencode_watches = opencode.scan(self._opencode, self.TRACK_SEC, self.procs)
+        self.sessions.update({sid: w.info for sid, w in opencode_watches.items()})
+        self.watches.update(opencode_watches)
+        for sid in [sid for sid in self.watches if sid.startswith(opencode.PREFIX) and sid not in opencode_watches]:
+            del self.watches[sid]
+            self._missing.pop(sid, None)
         self._scan_sessions()
         used = {r.log.path for r in self.runs.values()} | {w.log.path for w in self.watches.values()}
         for p in set(self.logs) - used:
@@ -1994,7 +2025,7 @@ class Tracker:
             self.guard(w, w.poll)
             self.watches[sid] = w
         for sid, w in self.watches.items():
-            if sid.startswith("codex:"):
+            if foreign_session(sid):
                 continue
             info = self.sessions.get(sid)
             w.procs = self.procs.tool_processes(info.pid) if self.procs is not None and info and info.pid else []
@@ -2009,7 +2040,7 @@ class Tracker:
         shells: dict[str, list[tuple[Proc, Proc]]] = {}
         for sid, w in self.watches.items():
             info = self.sessions.get(sid)
-            if not sid.startswith("codex:") and self.procs is not None and info and w.running_bg_tasks():
+            if not foreign_session(sid) and self.procs is not None and info and w.running_bg_tasks():
                 shells[sid] = self.procs.tool_shells(info.pid)
         pids = {p.pid for pairs in shells.values() for pair in pairs for p in pair}
         files = open_files(pids) if pids else {}

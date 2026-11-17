@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-17
+
+### Added
+
+- OpenCode sessions beside Claude Code and Codex sessions. The local OpenCode database
+  (`~/.local/share/opencode/opencode.db`, `XDG_DATA_HOME` and `WFWATCH_OPENCODE_DB` are honoured)
+  is read in SQLite read-only mode: model, tokens, tool calls, a shared activity log, child
+  sessions grouped under their root, subagent reports and background shells with their output file,
+  last line, exit code and – on macOS and Linux – the process that writes it.
+- `scripts/demo_data.py --opencode` writes a small OpenCode database for trying wfwatch without
+  sessions of your own.
+- Session output-file policy is parameterised, so a reader can keep its own root and suffix without
+  loosening the Claude Code one.
+
 ## [0.4.1] - 2026-11-17
 
 ### Added

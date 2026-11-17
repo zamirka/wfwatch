@@ -331,3 +331,22 @@ def isolate_codex(tmp_path, monkeypatch):
     from wfwatch import codex
 
     monkeypatch.setattr(codex, "CODEX_DIR", tmp_path / "codex")
+
+
+@pytest.fixture(autouse=True)
+def isolate_opencode(tmp_path, monkeypatch):
+    """No test reads the real OpenCode database, also in subprocesses."""
+    monkeypatch.setenv("WFWATCH_OPENCODE_DB", str(tmp_path / "opencode" / "opencode.db"))
+
+
+@pytest.fixture
+def opencode_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from opencode_home import OpenCodeHome
+
+    home = OpenCodeHome(tmp_path / "opencode-data")
+    monkeypatch.setenv("WFWATCH_OPENCODE_DB", str(home.db))
+    monkeypatch.setattr(model.ProcTable, "snapshot", classmethod(lambda cls: None))
+    try:
+        yield home
+    finally:
+        home.close()

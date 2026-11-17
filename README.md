@@ -5,16 +5,18 @@
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
 A live terminal view of Claude Code [workflows](https://code.claude.com/docs/en/workflows),
-[subagents](https://code.claude.com/docs/en/sub-agents) and sessions, alongside OpenAI Codex sessions.
+[subagents](https://code.claude.com/docs/en/sub-agents) and sessions, alongside OpenAI Codex and
+OpenCode sessions.
 
 [Русская версия](README.ru.md)
 
 A workflow runs dozens of agents in phases while your sessions keep working in other projects.
 wfwatch shows all of it in a separate terminal: which workflows are running, which phase each one
 is in and what every agent is doing right now, which sessions are working, waiting for your
-answer or running a background command. It only reads local files Claude Code and Codex already write, so it
-never slows down or interrupts anything. Claude Code's own `/workflows` view shows the runs of a
-session inside that session; wfwatch watches every session in every project at once.
+answer or running a background command. It only reads local files and databases Claude Code, Codex
+and OpenCode already keep, so it never slows down or interrupts anything. Claude Code's own
+`/workflows` view shows the runs of a session inside that session; wfwatch watches every session in
+every project at once.
 
 wfwatch is an unofficial tool, not affiliated with or endorsed by Anthropic (see
 [Disclaimer](#disclaimer)).
@@ -59,6 +61,27 @@ are not local rollouts; Claude workflow phase diagrams still use the Claude work
 The rollout format is internal and may change between Codex versions.
 
 See the [historical parity audit](docs/codex-parity-audit.md) for the migrated fixes and tests.
+
+## OpenCode sessions
+
+Run `wfwatch` or `wfwatch --overview` as usual. Local OpenCode sessions appear automatically beside
+Claude Code and Codex sessions. The reader opens `~/.local/share/opencode/opencode.db` (honouring
+`XDG_DATA_HOME`; `WFWATCH_OPENCODE_DB` overrides the file) in SQLite read-only mode, so it never
+writes to the database of a running app.
+
+It shows the model, token usage, tool activity and a shared activity log. Child sessions are grouped
+under their root, and a subagent report finishes the child. Background shells appear with their
+command, the last line of the `.out` file OpenCode streams their output to and their exit code. On
+macOS and Linux the process writing that file is found by the file descriptor, as for Codex, giving
+its CPU usage.
+
+OpenCode keeps no per-session process. A session counts as working while its turn is open
+(`time_busy` after `time_idle`) and is left out after an hour of silence. A running `question`,
+`plan` or `permission` tool is shown as waiting for your answer. OpenCode records no workflow phase
+journal, so workflow diagrams stay Claude-specific and an OpenCode session always appears as a
+session. The database schema belongs to OpenCode and may change between versions.
+
+See the [OpenCode parity audit](docs/opencode-audit.md) for the sources, data boundaries and tests.
 
 ## Install
 
@@ -133,12 +156,13 @@ No workflows of your own yet? The repository has a generator of synthetic data, 
 projects and sessions only:
 
 ```bash
-python3 scripts/demo_data.py /tmp/wfwatch-demo --live   # keeps it going for about two minutes; Ctrl+C to stop
-CLAUDE_CONFIG_DIR=/tmp/wfwatch-demo wfwatch             # in another terminal
+python3 scripts/demo_data.py /tmp/wfwatch-demo --live --opencode   # keeps it going; Ctrl+C to stop
+CLAUDE_CONFIG_DIR=/tmp/wfwatch-demo XDG_DATA_HOME=/tmp/wfwatch-demo wfwatch  # in another terminal
 ```
 
 Agents call tools and finish, the next phase starts, the workflow completes, a background command
-prints its progress and ends. Without `--live` the script writes a still picture and exits.
+prints its progress and ends. With `--opencode` two OpenCode sessions, one background shell and a
+subagent are added as a still picture. Without `--live` the script writes a still picture and exits.
 
 ## What you see
 
@@ -241,8 +265,9 @@ action show how an agent is getting on.
 
 ## How it works
 
-wfwatch reads the files Claude Code keeps under `CLAUDE_CONFIG_DIR` (`~/.claude` by default). Set
-that variable to watch another directory.
+wfwatch reads the files Claude Code keeps under `CLAUDE_CONFIG_DIR` (`~/.claude` by default) and
+the databases Codex and OpenCode write. Set `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or
+`WFWATCH_OPENCODE_DB` to watch another copy.
 
 | Source | What wfwatch takes from it |
 |---|---|
@@ -254,6 +279,7 @@ that variable to watch another directory.
 | `sessions/<pid>.json` | running sessions: name, status, working directory, where the session is open |
 | `/tmp/claude-<uid>/<project>/<session>/tasks/<task>.output` | the output of background commands (its last line) |
 | `CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` (default `~/.codex`) | Codex turns, tools, tokens, background commands and nested agents |
+| `$XDG_DATA_HOME/opencode/opencode.db` (default `~/.local/share/opencode`) | OpenCode sessions, messages, tokens, background jobs and subagent sessions, read-only |
 | `ps` | whether a session's process is alive, what its Bash tool is running right now |
 | `lsof` (macOS), `/proc/<pid>/fd` (Linux) | the file a background command writes to instead of its output file (`> render.log`): its last line |
 
@@ -269,7 +295,8 @@ processes, every three seconds. Runs with activity in the last three hours are t
 - A UTF-8 terminal with 256 colors or truecolor and a font with box-drawing characters.
 - At least 100 columns for the full diagram with the phase column (80x24 works, with a compact
   layout).
-- Claude Code and/or OpenAI Codex CLI/app. Checked against Claude Code 2.1.311 and Codex 0.166.0.
+- Claude Code, OpenAI Codex CLI/app and/or OpenCode. Checked against Claude Code 2.1.311, Codex
+  0.166.0 and OpenCode 2.3.0.
 
 ## Language and colors
 
@@ -290,12 +317,16 @@ foreground color. With `NO_COLOR` set, colors are dropped.
   while its process is (checked by process id and start time), so sessions running in another
   container or on another machine that shares the directory look closed. A background command
   started before its session was restarted is shown as lost.
+- OpenCode is read through one SQLite database; its schema is internal and may change. A database
+  with an unknown shape is skipped rather than guessed at. Without a per-session process, an
+  unfinished turn whose `time_busy` never closed is hidden after an hour of silence.
 - Only this machine and one `CLAUDE_CONFIG_DIR` at a time.
 
 ## Privacy
 
-Everything stays on your machine. wfwatch reads the files listed above and runs `ps` (and `lsof` on
-macOS); it writes nothing, opens no network connections and sends nothing anywhere.
+Everything stays on your machine. wfwatch reads the files and databases listed above and runs `ps`
+(and `lsof` on macOS); it writes nothing – the OpenCode database is opened read-only – opens no
+network connections and sends nothing anywhere.
 
 The screen does show what is in your transcripts: project and session names, file paths, commands,
 search queries, URLs and the first lines of what agents write. Keep that in mind when you share

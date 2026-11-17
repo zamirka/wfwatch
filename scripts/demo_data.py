@@ -10,11 +10,16 @@ Writes a fake CLAUDE_CONFIG_DIR where every project, session and agent is made u
 - session "nightly-bench": idle, but a background command (Bash with run_in_background) runs;
 - session "release-prep": idle, it launched "api-hardening".
 
+With --opencode it also writes `opencode/opencode.db`, the database OpenCode keeps under
+XDG_DATA_HOME: a session with tools and a running background shell, a subagent and a session
+waiting for an answer. That data is a still picture (nothing in it changes while wfwatch runs).
+
 Usage:
 
     python scripts/demo_data.py                      # into a new temporary directory, prints its path
     python scripts/demo_data.py /tmp/wf-demo --live  # and keep it going (Ctrl+C to stop)
     CLAUDE_CONFIG_DIR=/tmp/wf-demo wfwatch           # in another terminal
+    XDG_DATA_HOME=/tmp/wf-demo wfwatch               # with --opencode: the OpenCode sessions too
 
 With --live, agents keep calling tools and finish, the third phase starts and the workflow
 completes, the background command prints its progress and ends: about two minutes of activity.
@@ -37,6 +42,7 @@ import json
 import os
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -747,6 +753,233 @@ class Demo:
         self.advance(0.0)
 
 
+# ---- OpenCode data ----
+
+OC_SCHEMA = """
+CREATE TABLE project (id text PRIMARY KEY, worktree text NOT NULL, vcs text, name text);
+CREATE TABLE session_v2 (
+    id text PRIMARY KEY, project_id text NOT NULL, parent_id text, slug text NOT NULL DEFAULT '',
+    directory text NOT NULL DEFAULT '', title text, agent text, model text,
+    cost real NOT NULL DEFAULT 0, tokens_input integer NOT NULL DEFAULT 0,
+    tokens_output integer NOT NULL DEFAULT 0, tokens_reasoning integer NOT NULL DEFAULT 0,
+    tokens_cache_read integer NOT NULL DEFAULT 0, time_created integer NOT NULL,
+    time_updated integer NOT NULL, time_busy integer, time_idle integer, idle_outcome text,
+    time_archived integer, time_suspended integer
+);
+CREATE TABLE session_message (
+    id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, seq integer NOT NULL,
+    time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL
+);
+CREATE TABLE job (
+    notification_id text PRIMARY KEY, id text NOT NULL, session_id text NOT NULL,
+    child_session_id text, kind text NOT NULL, title text, status text NOT NULL, output text,
+    error text, recovery text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL
+);
+CREATE INDEX session_v2_parent_idx ON session_v2 (parent_id);
+CREATE INDEX session_message_session_seq_idx ON session_message (session_id, seq);
+CREATE INDEX session_message_time_created_idx ON session_message (time_created);
+CREATE INDEX job_session_idx ON job (session_id);
+"""
+
+
+class OpenCodeDemo:
+    """A small OpenCode database beside the Claude data: sessions, tools, a shell job, a subagent.
+
+    OpenCode keeps everything in one SQLite file; the demo writes the same tables wfwatch reads, so
+    `XDG_DATA_HOME=<demo> wfwatch` shows these sessions next to the Claude ones. The data is a still
+    picture: the shell job stays running and the subagent stays busy."""
+
+    def __init__(self, home: Path, lang: str = "en", start: datetime | None = None):
+        self.start = start or datetime.now(timezone.utc)
+        self.lang = lang
+        self.dir = home / "opencode"
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.db = sqlite3.connect(self.dir / "opencode.db")
+        self.db.executescript(OC_SCHEMA)
+        self.seq: dict[str, int] = {}
+        self._build()
+        self.db.commit()
+
+    def L(self, en: str, ru: str) -> str:  # noqa: N802
+        return ru if self.lang == "ru" else en
+
+    def _ms(self, seconds: float) -> int:
+        return ms(self.start + timedelta(seconds=seconds))
+
+    @property
+    def path(self) -> Path:
+        return self.dir / "opencode.db"
+
+    # ---- rows ----
+
+    def _session(
+        self,
+        sid: str,
+        title: str,
+        cwd: str,
+        *,
+        parent: str = "",
+        agent: str = "build",
+        created: float = -190,
+        updated: float = -2,
+        busy: float | None = -190,
+        idle: float | None = None,
+        tokens: tuple[int, int, int, int] = (70_000, 4_800, 1_200, 38_000),
+    ) -> str:
+        self.db.execute(
+            "insert into project (id, worktree, vcs) values (?, ?, 'git') on conflict(id) do nothing",
+            (uid(cwd), cwd),
+        )
+        self.db.execute(
+            "insert into session_v2 (id, project_id, parent_id, slug, directory, title, agent, model,"
+            " cost, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, time_created,"
+            " time_updated, time_busy, time_idle, idle_outcome, time_archived, time_suspended)"
+            " values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL)",
+            (
+                sid,
+                uid(cwd),
+                parent or None,
+                title.lower().replace(" ", "-"),
+                cwd,
+                title,
+                agent,
+                json.dumps({"id": "opencode/zen-1", "providerID": "opencode"}),
+                0.12,
+                *tokens,
+                self._ms(created),
+                self._ms(updated),
+                self._ms(busy) if busy is not None else None,
+                self._ms(idle) if idle is not None else None,
+                "succeeded" if idle is not None else None,
+            ),
+        )
+        return sid
+
+    def _message(self, sid: str, kind: str, at: float, data: dict) -> None:
+        self.seq[sid] = n = self.seq.get(sid, 0) + 1
+        stamp = self._ms(at)
+        self.db.execute(
+            "insert into session_message (id, session_id, type, seq, time_created, time_updated, data)"
+            " values (?,?,?,?,?,?,?)",
+            (f"msg_{uid(sid, str(n), n=20)}", sid, kind, n, stamp, stamp, json.dumps(data, ensure_ascii=False)),
+        )
+
+    def _assistant(self, sid: str, at: float, parts: list[dict]) -> None:
+        self._message(
+            sid,
+            "assistant",
+            at,
+            {
+                "time": {"created": self._ms(at)},
+                "agent": "build",
+                "model": {"id": "opencode/zen-1", "providerID": "opencode"},
+                "content": parts,
+            },
+        )
+
+    def _tool(self, name: str, call: str, at: float, status: str, **inp) -> dict:
+        state: dict = {"status": status, "input": inp}
+        if status == "completed":
+            state["content"] = [{"type": "text", "text": "ok"}]
+        return {
+            "type": "tool",
+            "id": call,
+            "name": name,
+            "executed": False,
+            "state": state,
+            "time": {"created": self._ms(at), "ran": self._ms(at)},
+        }
+
+    # ---- the picture ----
+
+    def _build(self) -> None:
+        api, docs = f"{HOME}/shop-api", f"{HOME}/docs-site"
+        tests = self.L("Run cache tests", "Тесты кеша")
+        root = self._session("ses_demo0cache", "vector-cache", api, created=-400, idle=-30, busy=-190)
+        self._message(root, "user", -388, {"text": self.L("Speed up the cache layer.", "Ускорить слой кеша.")})
+        self._assistant(
+            root, -380, [self._tool("read", "call_oc1", -380, "completed", path=f"{api}/src/cache/store.py")]
+        )
+        self._assistant(
+            root,
+            -160,
+            [self._tool("edit", "call_oc2", -160, "completed", path=f"{api}/src/cache/store.py")],
+        )
+        self._assistant(
+            root,
+            -40,
+            [self._tool("shell", "call_oc3", -40, "completed", command="pytest tests/cache -q", description=tests)],
+        )
+        self._assistant(
+            root,
+            -32,
+            [
+                {
+                    "type": "text",
+                    "text": self.L(
+                        "Cache tests pass; the benchmark still runs.", "Тесты кеша зелёные; бенчмарк ещё идёт."
+                    ),
+                }
+            ],
+        )
+        child = self._session(
+            "ses_demo0review",
+            self.L("Find call sites", "Найти места вызова"),
+            api,
+            parent=root,
+            agent="explore",
+            created=-70,
+            updated=-8,
+            busy=-70,
+            tokens=(12_000, 800, 200, 9_000),
+        )
+        self._assistant(child, -60, [self._tool("grep", "call_oc4", -60, "completed", pattern="cache.get")])
+        self._assistant(
+            child, -30, [self._tool("read", "call_oc5", -30, "completed", path=f"{api}/src/orders/service.py")]
+        )
+        wait = self._session("ses_demo0docs", self.L("api-docs", "api-docs"), docs, busy=-140)
+        self._assistant(
+            wait,
+            -140,
+            [
+                self._tool(
+                    "question",
+                    "call_oc6",
+                    -140,
+                    "running",
+                    questions=[
+                        {
+                            "header": self.L("Split the guide", "Разбить руководство"),
+                            "question": self.L("Split it into two pages?", "Разбить его на две страницы?"),
+                        }
+                    ],
+                )
+            ],
+        )
+        out = self.dir / "shell" / "demo" / "sh_demo0bench.out"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        lines = [f"[{i}/42] bench_case_{i}  {(i * 37) % 480 / 10 + 0.4:.2f} ms" for i in range(1, 43)]
+        out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.db.execute(
+            "insert into job (notification_id, id, session_id, child_session_id, kind, title, status,"
+            " output, error, recovery, time_created, time_updated) values (?,?,?,NULL,'shell',?,?,?,NULL,?,?,?)",
+            (
+                "notif_sh_demo0bench",
+                "sh_demo0bench",
+                root,
+                self.L("Run benchmark suite", "Прогнать бенчмарки"),
+                "running",
+                None,
+                json.dumps({"kind": "shell", "sessionID": root, "shellID": "sh_demo0bench"}),
+                self._ms(-330),
+                self._ms(-2),
+            ),
+        )
+
+    def close(self) -> None:
+        self.db.close()
+
+
 # ---- processes for --live ----
 
 # A stand-in for a session process: it lives while the demo script does. Given a command, it starts
@@ -839,6 +1072,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--live", action="store_true", help="keep going: agents work and finish (about two minutes)")
     ap.add_argument("--duration", type=float, default=0, help="--live: stop after this many seconds (default: Ctrl+C)")
     ap.add_argument("--lang", choices=("en", "ru"), default="en", help="language of the made-up content")
+    ap.add_argument(
+        "--opencode", action="store_true", help="also write a small OpenCode database (XDG_DATA_HOME=<dir>)"
+    )
     ap.add_argument("--pid", type=int, help="without --live: the process the sessions belong to (default: the parent)")
     args = ap.parse_args(argv)
 
@@ -848,6 +1084,12 @@ def main(argv: list[str] | None = None) -> int:
     prepare(home)
     if any(c.isspace() for c in str(home)):
         print("demo_data: the path contains spaces – background command output will not be found", file=sys.stderr)
+    if args.opencode:
+        OpenCodeDemo(home, args.lang).close()
+        print(
+            f"demo_data: OpenCode data in {home / 'opencode' / 'opencode.db'}: XDG_DATA_HOME={home} wfwatch",
+            file=sys.stderr,
+        )
 
     names = [s.name for s in story(args.lang)[1]]
     if not args.live:
@@ -874,6 +1116,8 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
             flush=True,
         )
+        if args.opencode:
+            print(f"demo_data: and for OpenCode: XDG_DATA_HOME={home} wfwatch", file=sys.stderr, flush=True)
         t0 = time.monotonic()
         told = False
         while True:

@@ -218,8 +218,8 @@ MESSAGES: dict[str, dict[str, Message]] = {
     "list.time": {"en": "time", "ru": "время"},
     # ---- command line ----
     "cli.description": {
-        "en": "Live view of Claude Code and Codex sessions: workflows, agents, log.",
-        "ru": "Живая схема сессий Claude Code и Codex: workflow, агенты, журнал.",
+        "en": "Live view of Claude Code, Codex and OpenCode sessions: workflows, agents, log.",
+        "ru": "Живая схема сессий Claude Code, Codex и OpenCode: workflow, агенты, журнал.",
     },
     "cli.usage": {"en": "usage: ", "ru": "использование: "},
     "cli.arguments": {"en": "arguments", "ru": "аргументы"},

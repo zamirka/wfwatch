@@ -192,3 +192,23 @@ def test_overview_header_fits_the_width(dd, claude_home, frozen_now):
     i18n.use_lang("en")
     first = render(app.frame(30), 120, 30).split("\n")[0]
     assert "1 waiting for you · 1 in background" in first, first
+
+
+def test_opencode_demo_data_shows_sessions_and_a_background_job(dd, tmp_path, monkeypatch):
+    home = tmp_path / "demo"
+    assert dd.main([str(home), "--pid", str(os.getpid()), "--opencode"]) == 0
+    monkeypatch.setenv("WFWATCH_OPENCODE_DB", str(home / "opencode" / "opencode.db"))
+    monkeypatch.setattr(model, "CLAUDE_DIR", home)
+    monkeypatch.setattr(model, "CLAUDE_TMP", home / "tmp")
+    monkeypatch.setattr(model.ProcTable, "snapshot", classmethod(lambda cls: None))
+    tracker = model.Tracker()
+    tracker.scan()
+    tracker.poll()
+    sessions = {s.name: s for s in tracker.active_sessions()}
+    assert sessions["api-docs"].state == model.WAITING
+    cache = sessions["vector-cache"]
+    assert cache.state == model.BACKGROUND
+    assert [t.description for t in cache.running_bg_tasks()] == ["Run benchmark suite"]
+    assert cache.running_bg_tasks()[0].last_line.startswith("[42/42]")
+    assert [a.label for a in cache.subagents.values()] == ["Find call sites"]
+    assert "Find call sites" not in sessions  # a subagent, not a card of its own

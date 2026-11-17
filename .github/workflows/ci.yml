@@ -156,6 +156,15 @@ jobs:
           wfwatch --once --overview --width 200
           wfwatch --once --cards --width 100
           wfwatch --once --lang ru --theme light --width 120
+      - name: Run the installed command on the OpenCode demo data
+        working-directory: ${{ runner.temp }}
+        run: |
+          python "$GITHUB_WORKSPACE/scripts/demo_data.py" "$RUNNER_TEMP/demo-oc" --opencode
+          export CLAUDE_CONFIG_DIR="$RUNNER_TEMP/demo-oc" XDG_DATA_HOME="$RUNNER_TEMP/demo-oc"
+          export PATH="$RUNNER_TEMP/venv/bin:$PATH"
+          wfwatch --once --overview --width 200 > "$RUNNER_TEMP/oc-demo.txt"
+          grep -q "api-docs" "$RUNNER_TEMP/oc-demo.txt"
+          wfwatch --once --width 120
       - name: Run the tests from the sdist
         run: |
           mkdir "$RUNNER_TEMP/sdist"

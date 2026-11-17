@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Session output-file policy is parameterised, so a reader can keep its own root and suffix without
   loosening the Claude Code one.
 
+### Fixed
+
+- OpenCode trees: background commands of child sessions are shown on the root card, the report of a
+  deeply nested agent is read from the parent that wrote it, the newest session trees survive the
+  session cap, and a session or child that stopped writing for an hour no longer counts as working.
+
 ## [0.4.1] - 2026-11-17
 
 ### Added

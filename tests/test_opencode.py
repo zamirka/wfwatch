@@ -5,7 +5,10 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from datetime import timedelta
+from pathlib import Path
 
+import pytest
 from opencode_home import OpenCodeHome
 
 from wfwatch import model
@@ -255,3 +258,182 @@ def test_cli_overview_keeps_claude_and_opencode_sessions_apart(claude_home, tmp_
         assert "Traceback" not in got.stderr
     finally:
         h.close()
+
+
+def test_an_incompatible_database_does_not_stop_other_readers(opencode_home, claude_home):
+    """A schema this reader does not know is its own error, not the end of the scan."""
+    h = opencode_home
+    claude_home.session("s-web", name="Claude session")
+    claude_home.transcript(
+        "s-web", claude_home.assistant(claude_home.ago(seconds=20), "m1", [claude_home.text("hello")])
+    )
+    h.session("ses_a", title="A")
+    h.conn.execute("alter table session_v2 drop column time_archived")
+    h.conn.commit()
+    tracker = model.Tracker()
+    tracker.scan()
+    assert "s-web" in tracker.watches
+    assert not any(sid.startswith("opencode:") for sid in tracker.watches)
+    assert tracker.errors() == []
+
+
+def test_a_child_shell_job_is_visible_from_the_root(opencode_home: OpenCodeHome):
+    """A child session has no card of its own: its command belongs to the root the user sees."""
+    h = opencode_home
+    h.session("ses_root", title="Parent", busy=h.at(minutes=5), idle=h.at(minutes=4))
+    h.session("ses_child", parent="ses_root", title="Worker", busy=h.at(minutes=5), idle=h.at(minutes=4))
+    h.job("sh_1", "ses_child", command="pytest -q", title="Run tests")
+    h.shell_output("sh_1", "[1/2] ok\n[2/2] ok\n")
+    tracker = model.Tracker()
+    tracker.scan()
+    root = tracker.watches["opencode:ses_root"]
+    assert [t.description for t in root.bg_tasks] == ["Run tests"]
+    assert [t.line for t in root.running_bg_tasks()] == ["[2/2] ok"]
+    assert root.state == model.BACKGROUND
+    assert tracker.active_sessions() == [root]
+
+    h.drop_job("sh_1")
+    h.message(
+        "ses_child",
+        kind="synthetic",
+        metadata={"source": "shell", "shellID": "sh_1", "state": "completed", "exit": 0},
+        text='<shell id="sh_1" state="completed" command="pytest -q">\n[1/2] ok\n[2/2] ok\n</shell>',
+        description="Run tests",
+    )
+    tracker.scan()
+    assert [t.status for t in root.recent_bg_tasks()] == ["completed"]
+
+
+def test_a_streaming_message_keeps_the_session_visible(opencode_home: OpenCodeHome, frozen_now):
+    """A row rewritten now is activity now: the agent may have started its message hours ago."""
+    h = opencode_home
+    t0 = frozen_now
+    h.session(
+        "ses_a",
+        title="Streaming",
+        created=t0 - timedelta(hours=3),
+        updated=t0 - timedelta(hours=2),
+        busy=t0 - timedelta(minutes=125),
+        idle=t0 - timedelta(minutes=126),
+    )
+    mid = h.message("ses_a", parts=[h.text("old")], created=t0 - timedelta(hours=2), updated=t0 - timedelta(hours=2))
+    tracker = model.Tracker()
+    tracker.scan()
+    assert tracker.active_sessions() == []  # silent for two hours: stuck, even if the turn is open
+
+    h.update_message("ses_a", mid, parts=[h.text("new text")])
+    tracker.scan()  # the row itself still says nothing; the message it rewrote is the newest activity
+    assert [w.name for w in tracker.active_sessions()] == ["Streaming"]
+
+
+def test_a_silent_busy_child_does_not_pin_the_root(opencode_home: OpenCodeHome):
+    """A child that stopped writing an hour ago is not a reason to keep the parent on screen."""
+    h = opencode_home
+    h.session("ses_root", title="Parent", updated=h.at(hours=2), busy=h.at(hours=2), idle=h.at(hours=3))
+    h.session(
+        "ses_child",
+        parent="ses_root",
+        title="Silent",
+        updated=h.at(hours=2),
+        busy=h.at(hours=2),
+        idle=h.at(hours=3),
+    )
+    tracker = model.Tracker()
+    tracker.scan()
+    assert tracker.active_sessions() == []
+
+
+def test_a_grandchild_report_finishes_it_from_its_parent(opencode_home: OpenCodeHome):
+    """The report of a nested agent is written to its own parent, not to the root."""
+    h = opencode_home
+    h.session("ses_root", title="Parent", busy=h.at(seconds=10))
+    h.session("ses_child", parent="ses_root", title="Middle", busy=h.at(minutes=5), idle=h.at(minutes=4))
+    h.session("ses_grand", parent="ses_child", title="Deep", busy=h.at(minutes=5), idle=h.at(minutes=4))
+    h.message(
+        "ses_child",
+        kind="synthetic",
+        metadata={"source": "subagent", "childID": "ses_grand", "state": "completed"},
+        text='<subagent sessionID="ses_grand" state="completed" description="Deep">\nAll good\n</subagent>',
+        description="Deep",
+    )
+    tracker = model.Tracker()
+    tracker.scan()
+    deep = next(a for a in tracker.watches["opencode:ses_root"].subagents.values() if a.label == "Deep")
+    assert deep.status == model.DONE
+    assert deep.result == "All good"
+
+
+def test_fresh_output_keeps_an_orphan_job_task_running(
+    opencode_home: OpenCodeHome, frozen_now, monkeypatch: pytest.MonkeyPatch
+):
+    """The job row disappears before the command ends: the file it writes still proves it runs."""
+    h = opencode_home
+    t0 = frozen_now
+    h.session(
+        "ses_a",
+        title="Tests",
+        created=t0 - timedelta(hours=2),
+        busy=t0 - timedelta(minutes=5),
+        idle=t0 - timedelta(minutes=6),
+    )
+    h.job(
+        "sh_1",
+        "ses_a",
+        command="pytest -q",
+        title="Run tests",
+        created=t0 - timedelta(minutes=90),
+        updated=t0 - timedelta(minutes=90),
+    )
+    tracker = model.Tracker()
+    tracker.scan()
+    task = tracker.watches["opencode:ses_a"].running_bg_tasks()[0]
+    h.drop_job("sh_1")
+    out = h.shell_output("sh_1", "[1/1] ok\n")
+
+    later = t0 + timedelta(hours=2)
+    monkeypatch.setattr(model, "now", lambda: later)
+    os.utime(out, (later.timestamp(), later.timestamp()))
+    tracker.poll()
+    assert task.status == model.RUNNING
+
+
+def test_the_session_limit_keeps_whole_recent_trees(opencode_home: OpenCodeHome, monkeypatch: pytest.MonkeyPatch):
+    """The cap must drop old trees, not the newest rows."""
+    from wfwatch.opencode import watch as oc
+
+    monkeypatch.setattr(oc, "MAX_SESSIONS", 3)
+    h = opencode_home
+    h.session("ses_old", title="Old", created=h.at(minutes=40), updated=h.at(minutes=30), busy=h.at(minutes=31))
+    h.session("ses_old_child", parent="ses_old", title="Old child", created=h.at(minutes=39), updated=h.at(minutes=30))
+    h.session("ses_new", title="New", created=h.at(minutes=2), updated=h.at(minutes=1), busy=h.at(minutes=1))
+    h.session("ses_new_a", parent="ses_new", title="New a", created=h.at(minutes=2), updated=h.at(minutes=1))
+    h.session("ses_new_b", parent="ses_new", title="New b", created=h.at(minutes=2), updated=h.at(minutes=1))
+    tracker = model.Tracker()
+    tracker.scan()
+    assert set(tracker.watches) == {"opencode:ses_new"}
+    assert sorted(a.label for a in tracker.watches["opencode:ses_new"].subagents.values()) == ["New a", "New b"]
+
+
+def test_the_shell_directory_is_listed_once_per_change(opencode_home: OpenCodeHome, monkeypatch: pytest.MonkeyPatch):
+    """Every poll of every session must not walk the whole output directory again."""
+    h = opencode_home
+    h.session("ses_a", title="A")
+    h.session("ses_b", title="B")
+    h.shell_output("sh_1", "x\n")
+    walked: list[str] = []
+    real = Path.glob
+
+    def counting(self, pattern, **kw):
+        if pattern == "*/*.out":
+            walked.append(str(self))
+        return real(self, pattern, **kw)
+
+    monkeypatch.setattr(Path, "glob", counting)
+    tracker = model.Tracker()
+    tracker.scan()
+    assert len(walked) == 1
+    tracker.poll()
+    assert len(walked) == 1
+    h.shell_output("sh_2", "y\n")
+    tracker.poll()
+    assert len(walked) == 2

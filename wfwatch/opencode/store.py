@@ -19,7 +19,47 @@ from pathlib import Path
 from urllib.parse import quote
 
 DB_ENV = "WFWATCH_OPENCODE_DB"
+_Listing = tuple[tuple[str, int], ...]  # (project directory name, its mtime) for each shell directory
+_SHELL_OUTPUTS: dict[Path, tuple[_Listing, dict[str, Path]]] = {}
 _REQUIRED = ("project", "session_v2", "session_message", "job")
+# The columns this reader names. A database that lost one of them is reported as a schema error
+# instead of failing in the middle of a query, where the whole tracker would stop with it.
+_REQUIRED_COLUMNS = {
+    "project": ("id", "worktree"),
+    "session_v2": (
+        "id",
+        "parent_id",
+        "title",
+        "slug",
+        "directory",
+        "model",
+        "agent",
+        "cost",
+        "tokens_input",
+        "tokens_output",
+        "tokens_reasoning",
+        "tokens_cache_read",
+        "time_created",
+        "time_updated",
+        "time_busy",
+        "time_idle",
+        "idle_outcome",
+        "time_archived",
+    ),
+    "session_message": ("id", "session_id", "type", "seq", "time_created", "time_updated", "data"),
+    "job": (
+        "id",
+        "session_id",
+        "child_session_id",
+        "kind",
+        "title",
+        "status",
+        "output",
+        "recovery",
+        "time_created",
+        "time_updated",
+    ),
+}
 _SESSION_COLUMNS = """
     s.id, s.parent_id, s.title, s.slug, s.directory, s.model, s.agent,
     s.cost, s.tokens_input, s.tokens_output, s.tokens_reasoning, s.tokens_cache_read,
@@ -165,6 +205,16 @@ class Store:
         if missing:
             self.db.close()
             raise StoreError(f"{self.path} has no {', '.join(missing)} table")
+        for table, columns in _REQUIRED_COLUMNS.items():
+            try:
+                have = {row[1] for row in self.db.execute(f"pragma table_info({table})")}
+            except sqlite3.Error as e:
+                self.db.close()
+                raise StoreError(f"cannot read {self.path}: {e}") from None
+            lost = [c for c in columns if c not in have]
+            if lost:
+                self.db.close()
+                raise StoreError(f"{self.path}: {table} has no {', '.join(lost)} column")
 
     def close(self) -> None:
         self.db.close()
@@ -203,20 +253,20 @@ class Store:
         which a streaming message updates in place without always moving `time_updated` far."""
         found: dict[str, MessageRow] = {}
         if since_ms is None:
-            rows = self.db.execute(
+            rows = self._rows(
                 f"select {_MESSAGE_COLUMNS} from session_message m where m.session_id=?"
                 " order by m.time_created desc, m.seq desc limit ?",
                 (session_id, tail or 200),
             )
             found.update((row[0], self._message(row)) for row in rows)
         else:
-            rows = self.db.execute(
+            rows = self._rows(
                 f"select {_MESSAGE_COLUMNS} from session_message m where m.session_id=? and m.time_updated >= ?",
                 (session_id, since_ms),
             )
             found.update((row[0], self._message(row)) for row in rows)
             if tail:
-                rows = self.db.execute(
+                rows = self._rows(
                     f"select {_MESSAGE_COLUMNS} from session_message m where m.session_id=?"
                     " order by m.time_created desc, m.seq desc limit ?",
                     (session_id, tail),
@@ -230,7 +280,7 @@ class Store:
         ids = [s for s in dict.fromkeys(session_ids) if s]
         for group in self._groups(ids):
             marks = ",".join("?" * len(group))
-            rows = self.db.execute(
+            rows = self._rows(
                 f"select {_JOB_COLUMNS} from job j where j.session_id in ({marks}) or j.child_session_id in ({marks})",
                 (*group, *group),
             )
@@ -238,23 +288,43 @@ class Store:
         return sorted(out, key=lambda j: (j.created or datetime.min.replace(tzinfo=timezone.utc), j.id))
 
     def shell_outputs(self) -> dict[str, Path]:
-        """shell id -> the file OpenCode streams that command's output to."""
+        """shell id -> the file OpenCode streams that command's output to.
+
+        Every session asks on every poll, and the answer only changes when a file appears or goes
+        away. A project directory's own mtime records exactly that, so the listing is redone only
+        when some directory changed, instead of walking every file of every project each time."""
+        root = self.path.parent / "shell"
+        try:
+            stamp = tuple(sorted((p.name, p.stat().st_mtime_ns) for p in root.iterdir() if p.is_dir()))
+        except OSError:
+            return {}
+        cached = _SHELL_OUTPUTS.get(root)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
         out: dict[str, Path] = {}
         try:
-            for path in (self.path.parent / "shell").glob("*/*.out"):
+            for path in root.glob("*/*.out"):
                 out[path.stem] = path
         except OSError:
             pass
+        _SHELL_OUTPUTS[root] = (stamp, out)
         return out
 
     # ---- row mapping ----
 
     def _sessions(self, where: str, args: tuple) -> list[SessionRow]:
-        rows = self.db.execute(
+        rows = self._rows(
             f"select {_SESSION_COLUMNS} from session_v2 s left join project p on p.id = s.project_id where {where}",
             args,
         )
         return [self._session(row) for row in rows]
+
+    def _rows(self, sql: str, args: tuple = ()) -> list:
+        """Run a read; a database that changes under us is this reader's error, not a crash."""
+        try:
+            return self.db.execute(sql, args).fetchall()
+        except sqlite3.Error as e:
+            raise StoreError(f"{self.path}: {e}") from None
 
     @staticmethod
     def _session(row) -> SessionRow:

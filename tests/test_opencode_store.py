@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from opencode_home import OpenCodeHome
@@ -158,3 +159,47 @@ def test_store_never_writes(opencode_home: OpenCodeHome):
         store.messages("ses_a", tail=10)
         assert store.read_only is True
     assert hashlib.sha256(h.db.read_bytes()).hexdigest() == before
+
+
+def test_a_database_without_a_required_column_is_a_store_error(tmp_path):
+    h = OpenCodeHome(tmp_path / "oc")
+    try:
+        h.conn.execute("alter table job drop column recovery")
+        h.conn.commit()
+        with pytest.raises(StoreError, match="recovery"):
+            Store(h.db)
+    finally:
+        h.close()
+
+
+def test_committed_rows_in_the_wal_are_visible(tmp_path):
+    """OpenCode runs in WAL mode: a writer that has not checkpointed yet is normal, not corrupt."""
+    h = OpenCodeHome(tmp_path / "oc")
+    try:
+        h.conn.execute("pragma journal_mode=wal")
+        h.session("ses_a", title="A")
+        h.message("ses_a", text="hello")
+        with Store(h.db) as store:
+            assert [r.id for r in store.recent_sessions(model.now() - timedelta(hours=1))] == ["ses_a"]
+            assert [m.data.get("content") for m in store.messages("ses_a")] == [[{"type": "text", "text": "hello"}]]
+    finally:
+        h.close()
+
+
+def test_output_files_outside_the_shell_directory_are_refused(tmp_path):
+    """The output path comes from the database: it must never lead out of the shell directory."""
+    shell = tmp_path / "data" / "shell"
+    (shell / "project").mkdir(parents=True)
+    inside = shell / "project" / "sh_1.out"
+    inside.write_text("ok\n", encoding="utf-8")
+    outside = tmp_path / "secret.out"
+    outside.write_text("no\n", encoding="utf-8")
+    link = shell / "project" / "sh_link.out"
+    link.symlink_to(outside)
+    roots = (shell,)
+    assert model.output_allowed(inside, roots, ".out") is True
+    assert model.output_allowed(outside, roots, ".out") is False
+    assert model.output_allowed(shell / ".." / "secret.out", roots, ".out") is False
+    assert model.output_allowed(link, roots, ".out") is False
+    assert model.output_allowed(inside, roots, ".output") is False
+    assert model.output_allowed(Path("sh_1.out"), roots, ".out") is False

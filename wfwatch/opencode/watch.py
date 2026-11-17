@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .. import model as m
@@ -20,6 +20,7 @@ PREFIX = "opencode:"
 SILENCE_SEC = m.QUIET_MAX[m.BUSY]  # a job without a row or output for this long is stale
 MAX_SESSIONS = 500
 MAX_DEPTH = 8
+_EPOCH = datetime.min.replace(tzinfo=timezone.utc)
 
 
 class OpenCodeWatch(m.SessionWatch):
@@ -32,6 +33,7 @@ class OpenCodeWatch(m.SessionWatch):
     def __init__(self, row: SessionRow, db_path: Path):
         self.row = row
         self.db_path = Path(db_path)
+        self.children: list[OpenCodeWatch] = []  # the sessions grouped under this root, one scan old
         transcript = self.db_path.parent / "opencode-sessions" / f"{row.id}.jsonl"  # a key, never read
         info = self._info(row)
         super().__init__(PREFIX + row.id, transcript, info)
@@ -82,7 +84,9 @@ class OpenCodeWatch(m.SessionWatch):
             self.main.last_ts = row.updated or row.created
         if self.main.started is None:
             self.main.started = row.created
-        busy = status in m.ACTIVE_STATUSES
+        # An open turn is not proof of work: a session (or a child) silent for an hour is stuck, and
+        # a stuck child must not keep its parent in the overview for ever.
+        busy = status in m.ACTIVE_STATUSES and self.quiet_sec() < m.QUIET_MAX[status]
         self.main.status = m.RUNNING if busy or self.running_bg_tasks() or self.running_subagents() else m.DONE
 
     # ---- polling ----
@@ -103,8 +107,8 @@ class OpenCodeWatch(m.SessionWatch):
             self._projection.apply_jobs(jobs, store.shell_outputs())
             self._observe(jobs)
             self._refresh()
+            self.poll_bg()  # a file being written is the freshest evidence a task still runs
             self._expire()
-            self.poll_bg()
             self.error = ""
         except StoreError as e:
             self.error = str(e)
@@ -128,7 +132,12 @@ class OpenCodeWatch(m.SessionWatch):
         for task in self.bg_map().values():
             if task.status != m.RUNNING:
                 continue
-            last = self._observed.get(task.task_id) or task.started or task.output_mtime
+            # The job row, the moment we saw that row and the last write to the output file are all
+            # evidence; the latest of them decides, so a file still growing keeps its task alive.
+            last = max(
+                (t for t in (task.output_mtime, task.started, self._observed.get(task.task_id)) if t is not None),
+                default=None,
+            )
             if last and (at - last).total_seconds() >= SILENCE_SEC:
                 task.status = m.STALE
                 task.ended = last + timedelta(seconds=SILENCE_SEC)
@@ -141,6 +150,23 @@ class OpenCodeWatch(m.SessionWatch):
 
     def bg_map(self) -> dict[str, m.BgTask]:
         return self._projection.tasks
+
+    @property
+    def bg_tasks(self) -> list[m.BgTask]:
+        """The commands of this session and of the sessions grouped under it: a child has no card
+        of its own, so the command it runs belongs to the tree the user sees."""
+        return [t for w in (self, *self.children) for t in w.bg_map().values()]
+
+    def running_bg_tasks(self) -> list[m.BgTask]:
+        return [t for t in self.bg_tasks if t.status == m.RUNNING]
+
+    def recent_bg_tasks(self, at: datetime | None = None, within: float = m.IDLE_KEEP_SEC) -> list[m.BgTask]:
+        at = at or m.now()
+        return [
+            t
+            for t in self.bg_tasks
+            if t.status == m.RUNNING or (t.ended is not None and (at - t.ended).total_seconds() < within)
+        ]
 
     def output_roots(self) -> tuple[Path, ...]:
         return (self.db_path.parent / "shell",)
@@ -216,7 +242,35 @@ def _tree(store: Store, since: datetime) -> list[SessionRow]:
         by_id.update({r.id: r for r in children})
         if len(by_id) >= MAX_SESSIONS:
             break
-    return list(by_id.values())[:MAX_SESSIONS]
+    rows = list(by_id.values())
+    return _cap(rows) if len(rows) > MAX_SESSIONS else rows
+
+
+def _cap(rows: list[SessionRow]) -> list[SessionRow]:
+    """Keep the newest trees whole, oldest trees go first: half a tree shows a child without the
+    root it is grouped under, and a slice by time would cut the newest session off."""
+    kept: list[SessionRow] = []
+    for tree in sorted(_trees(rows).values(), key=_tree_time, reverse=True):
+        if kept and len(kept) + len(tree) > MAX_SESSIONS:
+            break
+        kept += tree
+    return kept
+
+
+def _trees(rows: list[SessionRow]) -> dict[str, list[SessionRow]]:
+    by_id = {r.id: r for r in rows}
+    trees: dict[str, list[SessionRow]] = {}
+    for row in rows:
+        root, seen = row, set()
+        while root.parent_id and root.parent_id in by_id and root.id not in seen:
+            seen.add(root.id)
+            root = by_id[root.parent_id]
+        trees.setdefault(root.id, []).append(row)
+    return trees
+
+
+def _tree_time(tree: list[SessionRow]) -> datetime:
+    return max((r.updated or r.created or _EPOCH for r in tree), default=_EPOCH)
 
 
 def _recent(row: SessionRow, since: datetime) -> bool:
@@ -239,21 +293,35 @@ def _group(cache: dict[str, OpenCodeWatch]) -> dict[OpenCodeWatch, list[OpenCode
     for root, watches in roots.items():
         children = [w for w in watches if w is not root]
         for child in children:
-            report = root._projection.reports.get(child.row.id)
+            report = _report_for(child, cache, root)
             if report is not None:
                 state, text = report
                 child.main.result = m.first_line(text) or ""
                 child.main.status = m.FAILED if state in ("failed", "error") else m.DONE
+        root.children = children
         root.subagents = {child.transcript: child.main for child in children}
         root.events = sorted((e for w in watches for e in w._projection.events), key=lambda e: e.ts)[-300:]
         root.bg_agents = [
             child.main
             for child in children
-            if child.row.id in root._projection.running_children or child.info.status in m.ACTIVE_STATUSES
+            if child.row.id in root._projection.running_children or child.main.status == m.RUNNING
         ]
         if root.bg_agents and root.main.status == m.DONE:
             root.main.status = m.RUNNING
     return roots
+
+
+def _report_for(watch: OpenCodeWatch, cache: dict[str, OpenCodeWatch], root: OpenCodeWatch):
+    """The report about a child is written to its own parent's messages, which may not be the root."""
+    parent = cache.get(PREFIX + watch.row.parent_id) if watch.row.parent_id else None
+    seen: set[str] = set()
+    while parent is not None and parent.row.id not in seen:
+        got = parent._projection.reports.get(watch.row.id)
+        if got is not None:
+            return got
+        seen.add(parent.row.id)
+        parent = cache.get(PREFIX + parent.row.parent_id) if parent.row.parent_id else None
+    return root._projection.reports.get(watch.row.id)
 
 
 def refresh_processes(cache: dict[str, OpenCodeWatch], procs: m.ProcTable | None) -> None:

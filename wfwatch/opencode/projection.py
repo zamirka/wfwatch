@@ -129,8 +129,8 @@ class Projection:
             return
         self._seen[row.id] = stamp
         key = (int(row.created.timestamp() * 1000) if row.created else 0, row.seq)
-        if row.created:
-            self._touch(row.created)
+        if row.created or row.updated:
+            self._touch(row.created, row.updated)
         if row.type == "assistant":
             self._assistant(row, key)
         elif row.type == "idle":
@@ -138,11 +138,14 @@ class Projection:
         elif row.type == "synthetic":
             self._synthetic(row)
 
-    def _touch(self, ts: datetime) -> None:
-        if self.agent.last_ts is None or ts > self.agent.last_ts:
-            self.agent.last_ts = ts
-        if self.agent.started is None or ts < self.agent.started:
-            self.agent.started = ts
+    def _touch(self, created: datetime | None, updated: datetime | None = None) -> None:
+        """A message row is rewritten while the agent streams: the row's `updated` is activity now,
+        even when the message was created hours ago. `created` only says when it began."""
+        last = updated or created
+        if last is not None and (self.agent.last_ts is None or last > self.agent.last_ts):
+            self.agent.last_ts = last
+        if created is not None and (self.agent.started is None or created < self.agent.started):
+            self.agent.started = created
 
     def _assistant(self, row: MessageRow, key: tuple[int, int]) -> None:
         data = row.data
@@ -272,6 +275,11 @@ class Projection:
                     task.last_line = line
                     task.output_mtime = job.updated
         self.running_children = running
+        for task_id, path in outputs.items():
+            task = self.tasks.get(task_id)
+            if task is not None:
+                # The job row can be gone while its command still writes: the file is the evidence.
+                task.output_path = str(path)
 
 
 def _part_time(part: dict) -> datetime | None:

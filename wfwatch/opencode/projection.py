@@ -55,7 +55,13 @@ def describe_tool(name: str, inp: dict) -> m.Action:
     if name == "list":
         return m.Action("List", m.short_path(inp.get("path")))
     if name == "todowrite":
-        return m.Action("Todo", m.first_line(inp.get("todos"), 80))
+        steps = _todo_steps(inp.get("todos"))
+        if not steps:
+            return m.Action("Todo", "")
+        done = sum(step.status == "completed" for step in steps)
+        current = next((step.step for step in steps if step.status == "in_progress"), "")
+        progress = f"{done}/{len(steps)} · {current}" if current else f"{done}/{len(steps)}"
+        return m.Action("Todo", m.first_line(progress, 80))
     if name.startswith("mcp__"):
         return m.describe_tool(name, inp)
     return m.Action(name or "?", m.first_line(inp.get("description"), 80))
@@ -77,6 +83,26 @@ def output_line(text: str) -> str:
     return next((line for line in reversed(lines) if line), "")[:500]
 
 
+def _todo_steps(value: object) -> list[m.PlanStep] | None:
+    """The checklist of one `todowrite` call, or None when it is not a list this reader trusts."""
+    if not isinstance(value, list):
+        return None
+    steps: list[m.PlanStep] = []
+    for todo in value:
+        if not isinstance(todo, dict) or not isinstance(todo.get("content"), str):
+            return None
+        status = todo.get("status")
+        if status == "cancelled":  # the shared plan view knows pending, in_progress, completed
+            continue
+        if status not in ("pending", "in_progress", "completed"):
+            return None
+        step = m.first_line(todo["content"], 500)
+        if not step:
+            return None
+        steps.append(m.PlanStep(step, status))
+    return steps
+
+
 def _within(text: str, pattern: re.Pattern) -> str:
     match = pattern.search(text or "")
     return match[1] if match else ""
@@ -89,6 +115,7 @@ class Projection:
         self.agent = agent
         self.label = label
         self.tasks: dict[str, m.BgTask] = {}
+        self.plan_steps: list[m.PlanStep] = []
         self.events: list[m.Event] = []
         self.reports: dict[str, tuple[str, str]] = {}  # child session id -> (state, result)
         self.running_children: set[str] = set()
@@ -187,6 +214,8 @@ class Projection:
         inp = inp if isinstance(inp, dict) else {}
         action = describe_tool(part.get("name"), inp)
         name = m._s(part.get("name"))
+        if name == "todowrite":
+            self._todo_plan(inp)
         if status == "running":
             self._tools_running[call_id] = name
             if (started := _part_time(part) or row.created) is not None:
@@ -203,6 +232,13 @@ class Projection:
                 self.agent.last_ts = max(self.agent.last_ts or ts, ts)
             self.events.append(m.Event(ts or row.created or m.now(), self.label, "tool", action=action))
         return action
+
+    def _todo_plan(self, inp: dict) -> None:
+        """OpenCode's experimental todo list is a checklist, like the Codex plan: every call carries
+        all items, so the plan is replaced, and a list this reader cannot trust changes nothing."""
+        steps = _todo_steps(inp.get("todos"))
+        if steps is not None:
+            self.plan_steps = steps
 
     def _idle(self, row: MessageRow) -> None:
         outcome = m._s(row.data.get("outcome")) or "succeeded"

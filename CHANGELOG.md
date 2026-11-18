@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- OpenCode: a session's experimental `todowrite` checklist is shown as its plan – progress in the
+  overview, the full list in cards view. Cancelled items are left out, and a later call replaces it.
+
 ## [0.5.0] - 2026-11-17
 
 ### Added

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from opencode_home import OpenCodeHome
 
-from wfwatch import model
+from wfwatch import model, render
 
 
 def test_tracker_reads_tools_tokens_and_a_finished_turn(opencode_home: OpenCodeHome):
@@ -482,3 +482,97 @@ def test_a_child_process_is_not_counted_twice_under_the_root(opencode_home: Open
     root = tracker.watches["opencode:ses_root"]
     assert [p.pid for p in root.procs] == [511]
     assert [t.task_id for t in root.running_bg_tasks()] == ["sh_1"]
+
+
+def test_a_todo_list_becomes_the_session_plan(opencode_home: OpenCodeHome):
+    """OpenCode's experimental todowrite tool is a checklist, the same kind Codex records."""
+    h = opencode_home
+    h.session("ses_a", title="Todos", busy=h.at(seconds=10))
+    h.message(
+        "ses_a",
+        parts=[
+            h.tool(
+                "todowrite",
+                "call_todo",
+                input={
+                    "todos": [
+                        {"content": "Read the code", "status": "completed", "priority": "high"},
+                        {"content": "Write the fix", "status": "in_progress", "priority": "high"},
+                        {"content": "Run the tests", "status": "pending", "priority": "medium"},
+                        {"content": "An abandoned idea", "status": "cancelled", "priority": "low"},
+                    ]
+                },
+            )
+        ],
+    )
+    tracker = model.Tracker()
+    tracker.scan()
+    watch = tracker.watches["opencode:ses_a"]
+    assert [(s.step, s.status) for s in watch.plan_steps] == [
+        ("Read the code", "completed"),
+        ("Write the fix", "in_progress"),
+        ("Run the tests", "pending"),
+    ]
+    assert "1/3" in render.session_plan_summary(watch).plain
+    assert next(e for e in watch.events if e.action.tool == "Todo").action.arg == "1/3 · Write the fix"
+    assert [line.plain for line in render.session_plan_panel(watch).renderable.renderables] == [
+        "✓ Read the code",
+        "● Write the fix",
+        "○ Run the tests",
+    ]
+
+
+def test_the_latest_todo_list_replaces_the_plan(opencode_home: OpenCodeHome):
+    """Every call carries the whole list: the plan is replaced, never merged, and cleared by []."""
+    h = opencode_home
+    h.session("ses_a", title="Todos", busy=h.at(seconds=10))
+    h.message(
+        "ses_a",
+        parts=[
+            h.tool(
+                "todowrite",
+                "call_1",
+                input={
+                    "todos": [
+                        {"content": "First", "status": "pending"},
+                        {"content": "Second", "status": "pending"},
+                    ]
+                },
+            )
+        ],
+    )
+    tracker = model.Tracker()
+    tracker.scan()
+    watch = tracker.watches["opencode:ses_a"]
+    assert [s.step for s in watch.plan_steps] == ["First", "Second"]
+
+    h.message(
+        "ses_a",
+        parts=[h.tool("todowrite", "call_2", input={"todos": [{"content": "First", "status": "completed"}]})],
+    )
+    tracker.scan()
+    assert [(s.step, s.status) for s in watch.plan_steps] == [("First", "completed")]
+
+    h.message("ses_a", parts=[h.tool("todowrite", "call_3", input={"todos": []})])
+    tracker.scan()
+    assert watch.plan_steps == []
+    assert render.session_plan_summary(watch) is None
+
+
+def test_a_damaged_todo_list_does_not_break_the_session(opencode_home: OpenCodeHome):
+    """Only a well-formed list is a plan; a broken one changes nothing and hides no other tool."""
+    h = opencode_home
+    h.session("ses_a", title="Todos", busy=h.at(seconds=10))
+    h.message(
+        "ses_a",
+        parts=[
+            h.tool("todowrite", "call_bad", input={"todos": [{"content": "No status"}]}),
+            h.tool("read", "call_read", input={"filePath": "/home/user/dev/demo/app.py"}),
+        ],
+    )
+    tracker = model.Tracker()
+    tracker.scan()
+    watch = tracker.watches["opencode:ses_a"]
+    assert watch.plan_steps == []
+    assert watch.error == ""
+    assert any("app.py" in e.action.arg for e in watch.events)

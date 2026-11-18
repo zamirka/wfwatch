@@ -148,6 +148,11 @@ class OpenCodeWatch(m.SessionWatch):
 
     # ---- the shared model's hooks ----
 
+    @property
+    def plan_steps(self) -> list[m.PlanStep]:
+        """The checklist the session recorded with `todowrite` (empty when it recorded none)."""
+        return self._projection.plan_steps
+
     def bg_map(self) -> dict[str, m.BgTask]:
         return self._projection.tasks
 

@@ -23,6 +23,10 @@ JSON changed, so a second update within the same millisecond is still seen. `job
 while a job runs, and a synthetic message completes it. The connection is opened `mode=ro`; output
 files are read only under `<data dir>/shell` with the `.out` suffix.
 
+A checklist a session records itself (`update_plan` in Codex, the experimental `todowrite` in
+OpenCode) is the `plan_steps` list of `m.PlanStep`; the shared renderer shows progress and the list,
+and no adapter infers steps from commands or messages.
+
 Release checks: complete pytest suite (including encoding-warning mode), Ruff, wheel/sdist build,
 Twine metadata checks, clean-wheel CLI and source-distribution tests, then GitHub CI. Update the
 user installation from the published GitHub tag, with a final check outside the working tree.

@@ -75,6 +75,9 @@ command, the last line of the `.out` file OpenCode streams their output to and t
 macOS and Linux the process writing that file is found by the file descriptor, as for Codex, giving
 its CPU usage.
 
+An experimental `todowrite` checklist becomes the session plan: its progress appears in the overview
+and the full list in cards view. Cancelled items are left out, and a later call replaces the list.
+
 OpenCode keeps no per-session process. A session counts as working while its turn is open
 (`time_busy` after `time_idle`) and is left out after an hour of silence. A running `question`,
 `plan` or `permission` tool is shown as waiting for your answer. OpenCode records no workflow phase

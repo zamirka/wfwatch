@@ -1137,6 +1137,14 @@ class Notice:
     output_file: str = ""
 
 
+@dataclass(frozen=True)
+class PlanStep:
+    """One item of a checklist a session recorded itself (Codex update_plan, OpenCode todowrite)."""
+
+    step: str
+    status: str  # pending | in_progress | completed
+
+
 @dataclass
 class BgTask:
     """A Bash command the session started with run_in_background."""

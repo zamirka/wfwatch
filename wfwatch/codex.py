@@ -13,19 +13,12 @@ import re
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import model as m
 
 CODEX_DIR = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
-
-
-@dataclass(frozen=True)
-class PlanStep:
-    step: str
-    status: str
 
 
 # A deliberately small, non-executing reader for sequential code-mode prints.
@@ -181,7 +174,7 @@ class CodexWatch(m.SessionWatch):
         self._cells: dict[str, list[tuple[str, dict]]] = {}
         self._observed: dict[str, datetime] = {}
         self.writer_alive = False
-        self.plan_steps: list[PlanStep] = []
+        self.plan_steps: list[m.PlanStep] = []
         self.plan_explanation = ""
         self.main.label = label or info.name
         # A long turn can push turn_context out of the activity tail. Seed its model
@@ -375,7 +368,7 @@ class CodexWatch(m.SessionWatch):
             step = m.first_line(item["step"], 500)
             if not step:
                 return
-            steps.append(PlanStep(step, item["status"]))
+            steps.append(m.PlanStep(step, item["status"]))
         self.plan_steps = steps
         self.plan_explanation = m.first_line(args.get("explanation"), 500)
 

@@ -124,6 +124,7 @@ class Projection:
         self._tools_running: dict[str, str] = {}
         self._tool_started: dict[str, datetime] = {}
         self._last_key = (0, 0)
+        self._plan_key = (0, 0)
 
     @property
     def waiting(self) -> bool:
@@ -215,7 +216,7 @@ class Projection:
         action = describe_tool(part.get("name"), inp)
         name = m._s(part.get("name"))
         if name == "todowrite":
-            self._todo_plan(inp)
+            self._todo_plan(inp, key)
         if status == "running":
             self._tools_running[call_id] = name
             if (started := _part_time(part) or row.created) is not None:
@@ -233,12 +234,13 @@ class Projection:
             self.events.append(m.Event(ts or row.created or m.now(), self.label, "tool", action=action))
         return action
 
-    def _todo_plan(self, inp: dict) -> None:
+    def _todo_plan(self, inp: dict, key: tuple[int, int]) -> None:
         """OpenCode's experimental todo list is a checklist, like the Codex plan: every call carries
         all items, so the plan is replaced, and a list this reader cannot trust changes nothing."""
         steps = _todo_steps(inp.get("todos"))
-        if steps is not None:
+        if steps is not None and key >= self._plan_key:
             self.plan_steps = steps
+            self._plan_key = key
 
     def _idle(self, row: MessageRow) -> None:
         outcome = m._s(row.data.get("outcome")) or "succeeded"

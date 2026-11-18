@@ -212,18 +212,26 @@ def test_start_opens_the_single_workflow_even_with_its_own_session(claude_home):
     assert app.mode == "overview"
 
 
-def test_start_shows_the_latest_run_when_nothing_goes(claude_home):
+def test_start_does_not_pin_an_old_run_when_nothing_goes(claude_home):
     h = claude_home
-    d = h.run("s-gone", "wf_old", h.ago(hours=10), finished=h.ago(hours=9))
+    d = h.run("s-gone", "wf_old", h.ago(days=10), finished=h.ago(days=9))
     for f in d.iterdir():
-        os.utime(f, (model.now().timestamp() - 9 * 3600,) * 2)
-    os.utime(d, (model.now().timestamp() - 9 * 3600,) * 2)
+        os.utime(f, (model.now().timestamp() - 9 * 86400,) * 2)
+    os.utime(d, (model.now().timestamp() - 9 * 86400,) * 2)
     tr = model.Tracker()
     tr.scan()
     assert tr.visible() == []
     app = App(tr, expand_all=False)
     choose_start(app)
-    assert (app.mode, app.selected) == ("detail", d) and tr.extra == d
+    assert (app.mode, app.selected) == ("overview", None) and tr.extra is None
+    app.on_key("o")
+    assert tr.visible() == []
+    pinned = model.Tracker(extra=d)
+    pinned.scan()
+    manual = App(pinned, expand_all=False, pinned=True)
+    choose_start(manual, pinned=d)
+    assert (manual.mode, manual.selected) == ("detail", d)
+    assert [r.run_dir for r in pinned.visible()] == [d]
 
 
 def test_animating(home):

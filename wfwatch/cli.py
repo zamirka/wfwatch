@@ -344,8 +344,8 @@ class App:
 
 
 def choose_start(app: App, overview: bool = False, pinned: Path | None = None) -> None:
-    """The first screen: a pinned run; or, if exactly one workflow is going and nothing else (its own
-    session does not count), straight to its diagram; if nothing goes at all, the latest run."""
+    """Open an explicitly selected run or the only recent workflow. An empty monitor stays empty:
+    automatically pinning the latest historical run would keep it in the overview forever."""
     tracker = app.tracker
     if pinned is not None:
         app.open(pinned)
@@ -357,12 +357,6 @@ def choose_start(app: App, overview: bool = False, pinned: Path | None = None) -
     others = [s for s in tracker.active_sessions() if s.session_id not in owners]
     if len(runs) == 1 and not others:
         app.open(runs[0].run_dir)
-    elif not runs and not others:
-        latest = model.discover_runs()[:1]
-        if latest:
-            tracker.extra = latest[0]
-            app.safe("scan", tracker.scan)
-            app.open(latest[0])
 
 
 class _Terminated(BaseException):

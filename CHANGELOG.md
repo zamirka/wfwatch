@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Starting an empty monitor no longer pins the last historical Claude workflow indefinitely in
+  the overview. Explicit selection with `--run` still opens historical workflows.
+- OpenCode job rows left as `running` no longer act as fresh heartbeats on each poll; stale
+  commands and inactive child sessions stop keeping an idle root visible.
+- Re-reading an older OpenCode message no longer replaces a newer `todowrite` plan.
+
 ## [0.5.1] - 2026-11-18
 
 ### Added

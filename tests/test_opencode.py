@@ -388,6 +388,7 @@ def test_fresh_output_keeps_an_orphan_job_task_running(
         created=t0 - timedelta(minutes=90),
         updated=t0 - timedelta(minutes=90),
     )
+    h.shell_output("sh_1", "Starting...\n")  # actual recent activity despite the old job row
     tracker = model.Tracker()
     tracker.scan()
     task = tracker.watches["opencode:ses_a"].running_bg_tasks()[0]
@@ -576,3 +577,29 @@ def test_a_damaged_todo_list_does_not_break_the_session(opencode_home: OpenCodeH
     assert watch.plan_steps == []
     assert watch.error == ""
     assert any("app.py" in e.action.arg for e in watch.events)
+
+
+def test_unchanged_running_job_does_not_keep_old_session_visible(opencode_home, frozen_now, monkeypatch):
+    h = opencode_home
+    h.session(
+        "ses_old", title="e-disclosure_news", created=h.at(minutes=20), busy=h.at(minutes=10), idle=h.at(minutes=5)
+    )
+    h.job("sh_old", "ses_old", command="sleep 1", created=h.at(minutes=10), updated=h.at(minutes=5))
+    tracker = model.Tracker()
+    tracker.scan()
+    watch = tracker.watches["opencode:ses_old"]
+    assert watch.running_bg_tasks()
+    monkeypatch.setattr(model, "now", lambda: frozen_now + timedelta(days=8))
+    tracker.poll()
+    assert not watch.running_bg_tasks()
+    assert tracker.active_sessions() == []
+
+
+def test_stale_subagent_job_does_not_pin_idle_root(opencode_home):
+    h = opencode_home
+    h.session("ses_root", title="e-disclosure_news", busy=h.at(hours=4), idle=h.at(hours=3))
+    h.session("ses_child", parent="ses_root", created=h.at(days=8), updated=h.at(days=8), busy=h.at(days=8))
+    h.job("sub_old", "ses_root", kind="subagent", child="ses_child", created=h.at(days=8), updated=h.at(days=8))
+    tracker = model.Tracker()
+    tracker.scan()
+    assert tracker.active_sessions() == []

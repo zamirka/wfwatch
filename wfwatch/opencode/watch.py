@@ -108,9 +108,9 @@ class OpenCodeWatch(m.SessionWatch):
             jobs = store.jobs([self.row.id])
             self._projection.apply_jobs(jobs, store.shell_outputs())
             self._observe(jobs)
-            self._refresh()
             self.poll_bg()  # a file being written is the freshest evidence a task still runs
             self._expire()
+            self._refresh()
             self.error = ""
         finally:
             if own:
@@ -122,18 +122,18 @@ class OpenCodeWatch(m.SessionWatch):
         return store.messages(self.row.id, since_ms=self._since, tail=self.RECENT_MESSAGES)
 
     def _observe(self, jobs: Iterable[JobRow]) -> None:
-        at = m.now()
         for job in jobs:
-            if job.status == "running":
-                self._observed[job.id] = at
+            activity = job.updated or job.created
+            if job.status == "running" and activity is not None:
+                self._observed[job.id] = max(self._observed.get(job.id, activity), activity)
 
     def _expire(self) -> None:
         at = m.now()
         for task in self.bg_map().values():
             if task.status != m.RUNNING:
                 continue
-            # The job row, the moment we saw that row and the last write to the output file are all
-            # evidence; the latest of them decides, so a file still growing keeps its task alive.
+            # Only recorded activity counts. Reading the same running row again is not a heartbeat.
+            # A file still growing or a row updated by OpenCode keeps the task alive.
             last = max(
                 (t for t in (task.output_mtime, task.started, self._observed.get(task.task_id)) if t is not None),
                 default=None,
@@ -306,11 +306,7 @@ def _group(cache: dict[str, OpenCodeWatch]) -> dict[OpenCodeWatch, list[OpenCode
         root.children = children
         root.subagents = {child.transcript: child.main for child in children}
         root.events = sorted((e for w in watches for e in w._projection.events), key=lambda e: e.ts)[-300:]
-        root.bg_agents = [
-            child.main
-            for child in children
-            if child.row.id in root._projection.running_children or child.main.status == m.RUNNING
-        ]
+        root.bg_agents = [child.main for child in children if child.main.status == m.RUNNING]
         if root.bg_agents and root.main.status == m.DONE:
             root.main.status = m.RUNNING
     return roots

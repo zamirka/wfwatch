@@ -193,3 +193,30 @@ def test_two_updates_in_one_millisecond_are_both_seen(opencode_home: OpenCodeHom
     h.update_message("ses_a", mid, parts=[h.text("third")], updated=same)
     p.apply(rows(h))
     assert p.agent.last_action == model.Action("", "third")
+
+
+def test_rewritten_old_message_cannot_restore_an_old_todo_plan(opencode_home):
+    h = opencode_home
+    h.session("ses_a")
+    old = h.message(
+        "ses_a",
+        created=h.at(minutes=2),
+        parts=[h.tool("todowrite", "todo_old", input={"todos": [{"content": "Old plan", "status": "pending"}]})],
+    )
+    h.message(
+        "ses_a",
+        created=h.at(minutes=1),
+        parts=[h.tool("todowrite", "todo_new", input={"todos": [{"content": "New plan", "status": "in_progress"}]})],
+    )
+    p = projection(h)
+    p.apply(rows(h))
+    assert p.plan_steps[0].step == "New plan"
+    h.update_message(
+        "ses_a",
+        old,
+        parts=[
+            h.tool("todowrite", "todo_old", input={"todos": [{"content": "Rewritten old plan", "status": "completed"}]})
+        ],
+    )
+    p.apply(rows(h))
+    assert p.plan_steps[0].step == "New plan"

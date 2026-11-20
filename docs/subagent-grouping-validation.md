@@ -19,13 +19,15 @@ as well as Codex, OpenCode and explicit plans.
 
 ## Verification
 
-- Codex regression suite: 52 passed, including from a clean installed wheel outside the checkout.
+- Codex regression suite: 53 passed, including from a clean installed wheel outside the checkout.
 - Clean-wheel CLI acceptance: setup preview, approval modes, updates, independent session plans,
   rendering, restart and removal passed (`scripts/check_codex_install.py`).
 - Wheel and sdist built; strict Twine metadata checks passed.
 - Ruff lint/format and `git diff --check` passed.
-- Full suite with default-encoding warnings treated as errors: 695 passed, 1 skipped.
-- GitHub CI is checked after push for the exact commit.
+- Full suite with default-encoding warnings treated as errors: 696 passed, 1 skipped.
+- Initial CI caught a Windows file-URI conversion failure. The follow-up uses `url2pathname`;
+  the redirected-output test also covers spaces, Unicode and a literal percent escape in the path.
+  The final CI run is checked for the exact follow-up commit.
 
 ## Limits and rollback
 

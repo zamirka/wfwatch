@@ -16,7 +16,8 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from . import model as m
 from . import plans
@@ -196,7 +197,7 @@ def cli_children(command, output, *, cwd="", completed=None, duration=0) -> set[
         if index == len(args) - 2 and args.count(">") == 1:
             target = args[-1]
             if not any(c in target for c in ("$", "`", "~")):
-                directory = unquote(urlparse(cwd).path) if cwd.startswith("file://") else cwd
+                directory = url2pathname(urlparse(cwd).path) if cwd.startswith("file://") else cwd
                 path = Path(directory) / target
                 try:
                     if path.is_file():

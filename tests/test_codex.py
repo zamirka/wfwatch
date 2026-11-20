@@ -1130,7 +1130,10 @@ def test_cli_launch_identity_requires_actual_start_output():
     assert not codex.cli_children("codex exec --json task", json.dumps({"thread_id": CLI_CHILD}))
 
 
-def test_redirected_cli_identity_is_bounded_to_launch_time(tmp_path):
+@pytest.mark.parametrize("directory", ["plain", "space and %23 Unicode ж"])
+def test_redirected_cli_identity_is_bounded_to_launch_time(tmp_path, directory):
+    tmp_path = tmp_path / directory
+    tmp_path.mkdir()
     at = model.now()
     target = tmp_path / "output.jsonl"
     record = {"type": "step_start", "sessionID": "ses_example", "timestamp": int(at.timestamp() * 1000)}

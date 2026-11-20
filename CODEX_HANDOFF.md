@@ -60,5 +60,7 @@ Validation record: [docs/subagent-grouping-validation.md](docs/subagent-grouping
 (0.6.0 source update). The tests exercise actual Tracker scan/poll transitions and synthetic
 provider stores; Orca tests never read the user's database. Local wheel installation was verified
 outside the repository. Unrelated `marketplace/` work is excluded.
-Next step: commit this scoped change, push main and verify the CI matrix for that exact commit.
+Published initial grouping commit `ad86304` to main. Its CI detected a Windows file-URI path
+conversion bug; the follow-up uses platform-native `url2pathname` and adds an escaped-path case.
+Next step: verify the follow-up CI matrix for the exact pushed commit.
 Known limitations and rollback are in the validation record.

@@ -40,3 +40,25 @@ Version 0.6.0 ships `wfwatch codex setup/status/remove`. Setup previews by defau
 backs up originals and changes only owned content. `--require-approval` is opt-in. Package data
 `wfwatch/data/codex-plan.md` must match the source skill. Global user config is never auto-installed
 by the package. See `tests/test_codex_setup.py` and `scripts/check_codex_install.py`.
+
+Codex CLI-launched children are linked by exact JSON start identities from `codex exec --json`
+and `opencode run --format json`, including native CommandExecution records and delayed shell
+output. A direct `> file` destination can supply OpenCode's first start record only when its
+timestamp falls within the recorded execution interval. Reads are bounded. Tracker overlays these
+children in the existing subagent cards/graph and suppresses duplicate overview rows; provider
+native child lists remain unchanged. Conflicting owners and cycles remain separate. No ancestry
+is inferred from project directories. Orca `agent launch --agent codex` receipts are resolved through its local read-only
+`agent_session_records.adopted_native_id` mapping. Missing databases or changed schemas leave
+those chats separate. Launch wrappers, resumed sessions and
+commands without verifiable start identities remain separate. Tests are in `tests/test_codex.py`.
+
+## CLI grouping publication checkpoint
+
+Session: `01a1fabf-6417-71b2-8ff9-3fe08356478a`.
+The grouping fix and regression tests are ready for publication on main without a new release.
+Validation record: [docs/subagent-grouping-validation.md](docs/subagent-grouping-validation.md)
+(0.6.0 source update). The tests exercise actual Tracker scan/poll transitions and synthetic
+provider stores; Orca tests never read the user's database. Local wheel installation was verified
+outside the repository. Unrelated `marketplace/` work is excluded.
+Next step: commit this scoped change, push main and verify the CI matrix for that exact commit.
+Known limitations and rollback are in the validation record.

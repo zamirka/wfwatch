@@ -331,6 +331,7 @@ def isolate_codex(tmp_path, monkeypatch):
     from wfwatch import codex
 
     monkeypatch.setattr(codex, "CODEX_DIR", tmp_path / "codex")
+    monkeypatch.setattr(codex, "ORCA_DB", tmp_path / "orca" / "agent-session-domain.db")
 
 
 @pytest.fixture(autouse=True)

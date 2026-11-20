@@ -1110,3 +1110,225 @@ def test_command_record_without_timestamp_does_not_crash_or_imply_liveness(tmp_p
     tracker.scan()
     assert not tracker.errors()
     assert not tracker.watches["codex:one"].running_bg_tasks()
+
+
+CLI_CHILD = "12345678-1234-1234-1234-123456789abc"
+
+
+def test_cli_launch_identity_requires_actual_start_output():
+    output = json.dumps({"type": "thread.started", "thread_id": CLI_CHILD})
+    assert codex.cli_children('codex exec --json "task"', output) == {"codex:" + CLI_CHILD}
+    assert codex.cli_children(["/bin/zsh", "-lc", "codex exec --json task"], output)
+    for command in (
+        "cat log.jsonl",
+        'echo "codex exec --json"',
+        "codex exec resume --json task",
+        "codex exec --json task; cat log.jsonl",
+        "codex exec --json task\ncat log.jsonl",
+    ):
+        assert not codex.cli_children(command, output)
+    assert not codex.cli_children("codex exec --json task", json.dumps({"thread_id": CLI_CHILD}))
+
+
+def test_redirected_cli_identity_is_bounded_to_launch_time(tmp_path):
+    at = model.now()
+    target = tmp_path / "output.jsonl"
+    record = {"type": "step_start", "sessionID": "ses_example", "timestamp": int(at.timestamp() * 1000)}
+    target.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    command = "opencode run --format json task > output.jsonl"
+    assert codex.cli_children(command, "", cwd=tmp_path.as_uri(), completed=at, duration=1) == {"opencode:ses_example"}
+    assert codex.cli_children("python3 verify.py\n" + command, "", cwd=str(tmp_path), completed=at, duration=1) == {
+        "opencode:ses_example"
+    }
+    assert not codex.cli_children(command, "", cwd=str(tmp_path), completed=at + timedelta(seconds=60), duration=1)
+    assert not codex.cli_children(command, "", cwd=str(tmp_path), completed=at - timedelta(seconds=60), duration=1)
+
+
+def test_cli_groups_across_providers_without_changing_native_children(tmp_path):
+    parent = codex.CodexWatch(rollout(tmp_path, "parent"))
+    child = model.SessionWatch("opencode:ses_example", tmp_path / "child", model.SessionInfo("opencode:ses_example"))
+    other = codex.CodexWatch(rollout(tmp_path, "other"))
+    parent.cli_child_ids.add(child.session_id)
+    child.main.status = model.RUNNING
+    tracker = model.Tracker()
+    tracker.watches = {w.session_id: w for w in (parent, child, other)}
+    for _ in range(3):
+        tracker._group_cli_children()
+        assert tracker._cli_hidden == {child.session_id}
+        assert list(parent.subagents.values()) == [child.main]
+        assert parent.bg_agents == [child.main]
+        assert parent.children == []
+    child.main.status = model.DONE
+    tracker._group_cli_children()
+    assert not parent.bg_agents
+    parent.cli_child_ids.clear()
+    tracker._group_cli_children()
+    assert not parent.subagents
+    assert not tracker._cli_hidden
+
+
+def test_cli_ambiguous_ownership_and_cycles_do_not_hide_sessions(tmp_path):
+    watches = [codex.CodexWatch(rollout(tmp_path, name)) for name in ("one", "two", "three")]
+    a, b, c = watches
+    tracker = model.Tracker()
+    tracker.watches = {w.session_id: w for w in watches}
+    a.cli_child_ids.add(c.session_id)
+    b.cli_child_ids.add(c.session_id)
+    tracker._group_cli_children()
+    assert not tracker._cli_hidden
+    a.cli_child_ids = {b.session_id}
+    b.cli_child_ids = {a.session_id}
+    tracker._group_cli_children()
+    assert not tracker._cli_hidden
+
+
+def test_native_command_and_delayed_shell_output_discover_cli_children(tmp_path):
+    watch = codex.CodexWatch(rollout(tmp_path))
+    at = model.now()
+    output = json.dumps({"type": "thread.started", "thread_id": CLI_CHILD})
+    watch._command_completed(
+        {
+            "type": "CommandExecution",
+            "command": ["/bin/zsh", "-lc", "codex exec --json task"],
+            "aggregated_output": output,
+        },
+        at,
+    )
+    assert watch.cli_child_ids == {"codex:" + CLI_CHILD}
+    watch.cli_child_ids.clear()
+    watch._apply_command({"session_id": 42, "output": ""}, "exec_command", {"cmd": "codex exec --json task"}, at, at)
+    watch._apply_command({"exit_code": 0, "output": output}, "write_stdin", {"session_id": 42}, at, at)
+    assert watch.cli_child_ids == {"codex:" + CLI_CHILD}
+
+
+def test_orca_launch_resolves_exact_native_identity_read_only(tmp_path, monkeypatch):
+    import sqlite3
+
+    db = tmp_path / "orca.db"
+    monkeypatch.setattr(codex, "ORCA_DB", db)
+    sid = "codex_12345678_1234_1234_1234_123456789abc"
+    receipt = json.dumps({"ok": True, "result": {"outcome": {"kind": "structured", "sessionId": sid}}})
+    ids = codex.cli_children("/Applications/Orca.app/Contents/Resources/bin/orca agent launch --agent codex", receipt)
+    assert ids == {"orca:" + sid}
+    assert not codex.cli_children("cat receipt.json", receipt)
+    assert codex.resolve_orca_children(ids) == {}
+    assert not db.exists()
+    with sqlite3.connect(db) as connection:
+        connection.execute("CREATE TABLE agent_session_records (session_id TEXT, adopted_native_id TEXT)")
+        connection.execute("INSERT INTO agent_session_records VALUES (?,?)", (sid, CLI_CHILD))
+    before = db.read_bytes()
+    assert codex.resolve_orca_children(ids) == {"orca:" + sid: "codex:" + CLI_CHILD}
+    assert db.read_bytes() == before
+    db.write_bytes(b"changed schema or corrupt database")
+    assert codex.resolve_orca_children(ids) == {}
+
+
+def launch_record(command, output):
+    return row(
+        "event_msg",
+        {
+            "type": "item_completed",
+            "item": {
+                "type": "CommandExecution",
+                "command": ["/bin/sh", "-lc", command],
+                "aggregated_output": output,
+                "exit_code": 0,
+            },
+        },
+    )
+
+
+def test_cli_tracker_scan_poll_and_completion_preserve_native_children(tmp_path, monkeypatch, opencode_home):
+    monkeypatch.setattr(codex, "CODEX_DIR", tmp_path)
+    parent_path = rollout(tmp_path, "parent")
+    rollout(tmp_path, "native", parent="parent", path="Native reviewer")
+    child_path = rollout(tmp_path, CLI_CHILD)
+    standalone_path = rollout(tmp_path, "standalone")
+    h = opencode_home
+    h.session("ses_cli", title="CLI OpenCode", busy=h.at(seconds=2))
+    h.session("ses_nested", parent="ses_cli", title="Native OpenCode", busy=h.at(seconds=2))
+    append(
+        parent_path,
+        launch_record("codex exec --json task", json.dumps({"type": "thread.started", "thread_id": CLI_CHILD})),
+        launch_record("opencode run --format json task", json.dumps({"type": "step_start", "sessionID": "ses_cli"})),
+    )
+    tracker = model.Tracker()
+    for _ in range(3):
+        tracker.scan()
+        tracker.poll()
+        parent = tracker.watches["codex:parent"]
+        assert {w.session_id for w in tracker.active_sessions()} == {"codex:parent", "codex:standalone"}
+        assert len(parent.subagents) == 4
+        assert len(parent.children) == 1
+        assert len({id(a) for a in parent.bg_agents}) == len(parent.bg_agents)
+        assert standalone_path not in parent.subagents
+        assert not tracker.errors()
+    append(child_path, row("event_msg", {"type": "task_complete"}))
+    h.touch("ses_cli", busy=h.at(seconds=20), idle=h.at(seconds=1), outcome="succeeded")
+    h.touch("ses_nested", busy=h.at(seconds=20), idle=h.at(seconds=1), outcome="succeeded")
+    tracker.scan()
+    tracker.poll()
+    assert parent.subagents[child_path].status == model.DONE
+    assert {a.label for a in parent.running_subagents()} == {"Native reviewer"}
+    # Loss of the parent never hides a surviving child indefinitely.
+    parent_path.unlink()
+    for _ in range(3):
+        tracker.scan()
+    assert "codex:" + CLI_CHILD in {w.session_id for w in tracker.active_sessions()}
+
+
+def test_cli_tracker_nested_launches_and_transcript_reset(tmp_path, monkeypatch, claude_home):
+    monkeypatch.setattr(codex, "CODEX_DIR", tmp_path)
+    root = rollout(tmp_path, "root")
+    middle = rollout(tmp_path, CLI_CHILD)
+    leaf_id = "87654321-1234-1234-1234-123456789abc"
+    rollout(tmp_path, leaf_id)
+    append(
+        root, launch_record("codex exec --json task", json.dumps({"type": "thread.started", "thread_id": CLI_CHILD}))
+    )
+    append(
+        middle, launch_record("codex exec --json task", json.dumps({"type": "thread.started", "thread_id": leaf_id}))
+    )
+    tracker = model.Tracker()
+    tracker.scan()
+    tracker.poll()
+    assert [w.session_id for w in tracker.active_sessions()] == ["codex:root"]
+    assert len(tracker.watches["codex:root"].subagents) == 2
+    # Replacing the parent's transcript removes obsolete launch evidence.
+    root.unlink()
+    rollout(tmp_path, "root")
+    tracker.scan()
+    tracker.poll()
+    assert {w.session_id for w in tracker.active_sessions()} == {"codex:root", "codex:" + CLI_CHILD}
+    assert not tracker.watches["codex:root"].subagents
+
+
+def test_orca_schema_drift_keeps_launched_session_visible(tmp_path, monkeypatch, claude_home):
+    import sqlite3
+
+    monkeypatch.setattr(codex, "CODEX_DIR", tmp_path)
+    db = tmp_path / "orca.db"
+    monkeypatch.setattr(codex, "ORCA_DB", db)
+    parent_path = rollout(tmp_path, "parent")
+    rollout(tmp_path, CLI_CHILD)
+    orca_id = "codex_12345678_1234_1234_1234_123456789abc"
+    append(
+        parent_path,
+        launch_record(
+            "orca agent launch --agent codex",
+            json.dumps({"ok": True, "result": {"outcome": {"kind": "structured", "sessionId": orca_id}}}),
+        ),
+    )
+    with sqlite3.connect(db) as connection:
+        connection.execute("CREATE TABLE agent_session_records (session_id TEXT, adopted_native_id TEXT)")
+        connection.execute("INSERT INTO agent_session_records VALUES (?,?)", (orca_id, CLI_CHILD))
+    tracker = model.Tracker()
+    tracker.scan()
+    assert [w.session_id for w in tracker.active_sessions()] == ["codex:parent"]
+    with sqlite3.connect(db) as connection:
+        connection.execute("DROP TABLE agent_session_records")
+    tracker.scan()
+    tracker.poll()
+    assert len(tracker.active_sessions()) == 2
+    assert not tracker.watches["codex:parent"].subagents
+    assert not tracker.errors()

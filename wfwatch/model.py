@@ -1956,6 +1956,8 @@ class Tracker:
         self._transcripts: dict[str, Path] = {}
         self._codex: dict = {}
         self._opencode: dict = {}
+        self._cli_grouped: dict[str, dict[Path, Agent]] = {}
+        self._cli_hidden: set[str] = set()
 
     def log(self, transcript: Path) -> SessionLog:
         if transcript not in self.logs:
@@ -2003,6 +2005,7 @@ class Tracker:
             del self.watches[sid]
             self._missing.pop(sid, None)
         self._scan_sessions()
+        self._group_cli_children()
         used = {r.log.path for r in self.runs.values()} | {w.log.path for w in self.watches.values()}
         for p in set(self.logs) - used:
             del self.logs[p]
@@ -2088,6 +2091,50 @@ class Tracker:
             self.guard(r, lambda r=r: r.poll(self.sessions))
         for sid, w in self.watches.items():
             self.guard(w, lambda w=w, sid=sid: w.poll(self.sessions.get(sid)))
+        self._group_cli_children()
+
+    def _group_cli_children(self) -> None:
+        # Remove only our previous overlay; provider adapters own native ancestry.
+        for sid, agents in self._cli_grouped.items():
+            if watch := self.watches.get(sid):
+                for path, agent in agents.items():
+                    if watch.subagents.get(path) is agent:
+                        del watch.subagents[path]
+                watch.bg_agents = [a for a in watch.bg_agents if all(a is not old for old in agents.values())]
+        self._cli_grouped = {}
+        self._cli_hidden = set()
+        from .codex import resolve_orca_children
+
+        launch_ids = {
+            child
+            for watch in self.watches.values()
+            for source in (watch, *getattr(watch, "children", []))
+            for child in getattr(source, "cli_child_ids", ())
+        }
+        resolved = resolve_orca_children(launch_ids)
+        owners: dict[str, set[str]] = {}
+        for sid, watch in self.watches.items():
+            for source in (watch, *getattr(watch, "children", [])):
+                for child in getattr(source, "cli_child_ids", ()):
+                    child = resolved.get(child, child)
+                    if child in self.watches and child != sid:
+                        owners.setdefault(child, set()).add(sid)
+        parents = {child: next(iter(ids)) for child, ids in owners.items() if len(ids) == 1}
+        for child in parents:
+            root, seen = child, set()
+            while root in parents and root not in seen:
+                seen.add(root)
+                root = parents[root]
+            if root in seen:  # Corrupt or ambiguous ancestry must not hide sessions.
+                continue
+            watch = self.watches[child]
+            agents = {watch.transcript: watch.main, **watch.subagents}
+            self._cli_grouped.setdefault(root, {}).update(agents)
+            self._cli_hidden.add(child)
+        for sid, agents in self._cli_grouped.items():
+            watch = self.watches[sid]
+            watch.subagents.update(agents)
+            watch.bg_agents.extend(a for a in agents.values() if a.status == RUNNING)
 
     def errors(self) -> list[str]:
         """Items whose last update failed: 'what: error'."""
@@ -2108,7 +2155,9 @@ class Tracker:
     def active_sessions(self) -> list[SessionWatch]:
         """Sessions to show – including those running workflows: a session works alongside its run."""
         at = now()
-        return sorted((w for w in self.watches.values() if w.shown(at)), key=lambda w: w.name)
+        return sorted(
+            (w for sid, w in self.watches.items() if sid not in self._cli_hidden and w.shown(at)), key=lambda w: w.name
+        )
 
 
 def _mtime(p: Path) -> float:

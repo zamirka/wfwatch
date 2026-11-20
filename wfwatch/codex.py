@@ -11,15 +11,18 @@ import json
 import os
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from . import model as m
 from . import plans
 
 CODEX_DIR = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+ORCA_DB = Path.home() / "Library/Application Support/Orca/agent-session-domain.db"
 
 
 # A deliberately small, non-executing reader for sequential code-mode prints.
@@ -129,6 +132,126 @@ def command_matches(command: str, process: m.Proc) -> bool:
     return bool(tail) and os.path.basename(tail[0]) == os.path.basename(actual[0]) and tail[1:] == actual[1:]
 
 
+def cli_children(command, output, *, cwd="", completed=None, duration=0) -> set[str]:
+    """Read identities only from JSON output of a direct CLI launch, never prompt text."""
+    if isinstance(command, list):
+        if len(command) != 3 or command[1] not in ("-c", "-lc"):
+            return set()
+        command = command[2]
+    if not isinstance(command, str) or not isinstance(output, str):
+        return set()
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>\n")
+        lexer.whitespace = " \t\r"
+        lexer.whitespace_split = True
+        args = list(lexer)
+        if any(a in (";", "&&", "\n") for a in args):
+            # For a batch, stdout cannot be attributed to a particular command.
+            # Only explicit redirected files with verified start times are usable.
+            if not cwd or not completed or any(a in ("||", "|", "&", "(", ")") for a in args):
+                return set()
+            found, segment = set(), []
+            for token in [*args, ";"]:
+                if token in (";", "&&", "\n"):
+                    if ">" in segment:
+                        found.update(
+                            cli_children(shlex.join(segment), "", cwd=cwd, completed=completed, duration=duration)
+                        )
+                    segment = []
+                else:
+                    segment.append(token)
+            return found
+        if any("\n" in a or a in ("||", "|", "&", "(", ")") for a in args):
+            return set()
+    except ValueError:
+        return set()
+    if len(args) < 3:
+        return set()
+    binary = Path(args[0]).name
+    if binary == "orca" and args[1:3] == ["agent", "launch"]:
+        if not any(args[i : i + 2] == ["--agent", "codex"] for i in range(len(args) - 1)):
+            return set()
+        receipt = m._loads(output.encode("utf-8"))
+        if not isinstance(receipt, dict) or receipt.get("ok") is not True:
+            return set()
+        result = receipt.get("result")
+        outcome = result.get("outcome") if isinstance(result, dict) else None
+        if isinstance(outcome, dict) and outcome.get("kind") == "structured":
+            sid = m._s(outcome.get("sessionId"))
+            if re.fullmatch(r"codex_[a-f0-9_]+", sid):
+                return {"orca:" + sid}
+        return set()
+    codex = binary == "codex" and args[1] == "exec" and "--json" in args
+    opencode = (
+        binary == "opencode"
+        and args[1] == "run"
+        and any(args[i : i + 2] == ["--format", "json"] for i in range(len(args) - 1))
+    )
+    if not (codex or opencode) or any(a in args for a in ("resume", "--session", "-s", "--continue", "-c")):
+        return set()
+    # A launch may redirect JSON to a file. Read only the explicit destination,
+    # bounded, and require a start timestamp within this execution interval.
+    if ">" in args and cwd and completed:
+        index = args.index(">")
+        if index == len(args) - 2 and args.count(">") == 1:
+            target = args[-1]
+            if not any(c in target for c in ("$", "`", "~")):
+                directory = unquote(urlparse(cwd).path) if cwd.startswith("file://") else cwd
+                path = Path(directory) / target
+                try:
+                    if path.is_file():
+                        with path.open("rb") as stream:
+                            first = stream.readline(128 * 1024)
+                        record = m._loads(first)
+                        stamp = record.get("timestamp") if isinstance(record, dict) else None
+                        if isinstance(stamp, (int, float)) and not isinstance(stamp, bool):
+                            age = completed.timestamp() - stamp / 1000
+                            if -2 <= age <= duration + 5:
+                                output += "\n" + first.decode("utf-8", "replace")
+                except (OSError, ValueError):
+                    pass
+    found = set()
+    for line in output.splitlines():
+        item = m._loads(line.encode("utf-8"))
+        if not isinstance(item, dict):
+            continue
+        if codex and item.get("type") == "thread.started":
+            sid = m._s(item.get("thread_id"))
+            if re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", sid):
+                found.add("codex:" + sid)
+        if opencode and item.get("type") == "step_start":
+            sid = m._s(item.get("sessionID"))
+            if re.fullmatch(r"ses_[A-Za-z0-9]+", sid):
+                found.add("opencode:" + sid)
+    return found
+
+
+def resolve_orca_children(ids: set[str]) -> dict[str, str]:
+    """Resolve only explicitly launched Orca IDs; absence/schema drift leaves rows separate."""
+    wanted = sorted(sid for sid in ids if sid.startswith("orca:"))
+    if not wanted or not ORCA_DB.is_file():
+        return {}
+    found = {}
+    try:
+        connection = sqlite3.connect(ORCA_DB.as_uri() + "?mode=ro", uri=True, timeout=0.1)
+        try:
+            for sid in wanted:
+                row = connection.execute(
+                    "SELECT adopted_native_id FROM agent_session_records WHERE session_id=?", (sid[5:],)
+                ).fetchone()
+                if (
+                    row
+                    and isinstance(row[0], str)
+                    and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", row[0])
+                ):
+                    found[sid] = "codex:" + row[0]
+        finally:
+            connection.close()
+    except (sqlite3.Error, OSError, ValueError):
+        pass
+    return found
+
+
 class CodexWatch(m.SessionWatch):
     def __init__(self, path: Path):
         # A fork can contain its parent's session_meta later in the transcript.
@@ -174,6 +297,7 @@ class CodexWatch(m.SessionWatch):
         self._completed_commands: dict[str, tuple[dict, object]] = {}
         self._cells: dict[str, list[tuple[str, dict]]] = {}
         self._observed: dict[str, datetime] = {}
+        self.cli_child_ids: set[str] = set()
         self.writer_alive = False
         self.plan_steps: list[m.PlanStep] = []
         self.plan_explanation = ""
@@ -202,6 +326,7 @@ class CodexWatch(m.SessionWatch):
             self._tasks.clear()
             self._task_pids.clear()
             self._commands.clear()
+            self.cli_child_ids.clear()
             self._completed_commands.clear()
             self._cells.clear()
             self._observed.clear()
@@ -328,6 +453,7 @@ class CodexWatch(m.SessionWatch):
         if name not in ("exec", "exec_command", "write_stdin", "wait"):
             return
         sid = str(data.get("session_id") or args.get("session_id") or "")
+        self.cli_child_ids.update(cli_children(args.get("cmd") or self._commands.get(sid), data.get("output")))
         if not sid or not ("session_id" in data or "exit_code" in data):
             return
         task = self._tasks.get(sid)
@@ -357,6 +483,16 @@ class CodexWatch(m.SessionWatch):
     def _command_completed(self, item, ts) -> None:
         if not isinstance(item, dict) or item.get("type") != "CommandExecution":
             return
+        duration = item.get("duration") or {}
+        self.cli_child_ids.update(
+            cli_children(
+                item.get("command"),
+                item.get("aggregated_output"),
+                cwd=m._s(item.get("cwd")),
+                completed=ts,
+                duration=duration.get("secs", 0) if isinstance(duration, dict) else 0,
+            )
+        )
         sid = str(item.get("process_id") or "")
         task = self._tasks.get(sid)
         if task is not None:

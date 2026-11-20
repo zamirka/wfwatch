@@ -55,12 +55,26 @@ commands without verifiable start identities remain separate. Tests are in `test
 ## CLI grouping publication checkpoint
 
 Session: `01a1fabf-6417-71b2-8ff9-3fe08356478a`.
-The grouping fix and regression tests are ready for publication on main without a new release.
+The grouping fix and regression tests were published on main.
 Validation record: [docs/subagent-grouping-validation.md](docs/subagent-grouping-validation.md)
 (0.6.0 source update). The tests exercise actual Tracker scan/poll transitions and synthetic
 provider stores; Orca tests never read the user's database. Local wheel installation was verified
 outside the repository. Unrelated `marketplace/` work is excluded.
 Published initial grouping commit `ad86304` to main. Its CI detected a Windows file-URI path
 conversion bug; the follow-up uses platform-native `url2pathname` and adds an escaped-path case.
-Next step: verify the follow-up CI matrix for the exact pushed commit.
+Follow-up `40ee8dd` passed all 20 GitHub CI jobs.
 Known limitations and rollback are in the validation record.
+
+## Release 0.6.1 checkpoint
+
+Session: `01a1fabf-6417-71b2-8ff9-3fe08356478a`.
+The user approved v0.6.1 publication and a local update from its Git tag. This patch release
+ships the verified CLI grouping changes above. Release notes: [docs/releases/0.6.1.md](docs/releases/0.6.1.md).
+Release gates: full encoding-strict pytest, Ruff, wheel/sdist metadata, isolated installed CLI,
+sdist tests and CI on the release commit before tagging. After publication, verify the installed
+version and grouping outside the checkout. Rollback target: v0.6.0. No unresolved implementation
+issues; unsupported launch wrappers still remain separate by design.
+
+Local 0.6.1 release checks passed: 696/1 checkout tests, 688/9 sdist tests (passed/skipped),
+clean-wheel CLI acceptance, Ruff and strict Twine. Next: verify release-commit CI, publish
+v0.6.1 with checksummed distribution assets and install from the published tag.

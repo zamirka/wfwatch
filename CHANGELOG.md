@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-21
+
+### Fixed
+
+- Group Codex-launched Codex and OpenCode CLI sessions beneath their parent using exact
+  start-event IDs, including delayed and redirected output.
+- Resolve Orca-created Codex chats through the local read-only native-session mapping.
+- Keep unrelated sessions separate; handle repeated scans, child completion, transcript
+  replacement, missing parents and unavailable Orca mappings without stale grouping.
+- Decode redirected-output file URIs correctly on Windows, including escaped paths.
+
+### Tests
+
+- Add regression coverage for CLI/native nesting, lifecycle transitions, conflicting owners,
+  cycles, stale output and database schema drift, using isolated synthetic provider stores.
+
 ## [0.6.0] - 2026-11-21
 
 ### Added
@@ -236,7 +252,8 @@ Claude Code 2.1.311.
   is restored after `q`, Ctrl+C, SIGTERM and SIGHUP.
 - `--version` and `python -m wfwatch`.
 
-[Unreleased]: https://github.com/zamirka/wfwatch/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/zamirka/wfwatch/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/zamirka/wfwatch/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/zamirka/wfwatch/compare/v0.5.1...v0.6.0
 [0.4.1]: https://github.com/zamirka/wfwatch/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/zamirka/wfwatch/compare/v0.3.2...v0.4.0

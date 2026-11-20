@@ -2,3 +2,10 @@
 include CHANGELOG.md
 graft tests
 global-exclude __pycache__ *.py[cod]
+
+include docs/codex-approved-plans.md
+include skills/wfwatch-plan/SKILL.md
+
+include scripts/check_codex_install.py
+
+include docs/releases/0.6.0-validation.md

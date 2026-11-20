@@ -51,6 +51,9 @@ wfwatch = "wfwatch.cli:main"
 [tool.setuptools]
 packages = ["wfwatch", "wfwatch.opencode"]
 
+[tool.setuptools.package-data]
+wfwatch = ["data/*.md"]
+
 [tool.setuptools.dynamic]
 version = { attr = "wfwatch.__version__" }
 

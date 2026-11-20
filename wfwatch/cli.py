@@ -129,7 +129,7 @@ class App:
         if p is None or p.s is not s:
             new = SessionPainter(s, self.colors, self.view)
             if p is not None:
-                new.scroll = p.scroll
+                new.scroll, new.plan_sel, new.plan_open = p.scroll, p.plan_sel, p.plan_open
             self.session_painters[s.session_id] = p = new
         return p
 
@@ -157,8 +157,8 @@ class App:
         return None
 
     def keys(self, multi: bool):
-        if isinstance(self.selected, str):
-            return keybar("session", multi, False, self.view)
+        if (sp := self.current_session()) is not None:
+            return sp.keys(multi)
         p = self.current()
         return keybar("detail", multi, self.expand_all, self.view, bool(p and p.phase_sel is not None))
 
@@ -181,6 +181,10 @@ class App:
         Letter keys also work in the Russian keyboard layout (й – q, щ – o, ф – a, м – v, а – f)."""
         at = time.monotonic() if at is None else at
         items = self.items()
+        sp = self.current_session()
+        if sp is not None and sp.plan_open and key in ("esc", "p", "P", "з"):
+            sp.plan_open, sp.scroll = False, 0
+            return True
         if key in ("q", "Q", "й"):
             return False
         if len(key) == 1 and "0" <= key <= "9":  # ASCII only: "²".isdigit() is true too
@@ -203,9 +207,17 @@ class App:
             self.view = "cards" if self.view == "graph" else "graph"
             for p in [*self.painters.values(), *self.session_painters.values()]:
                 p.view, p.scroll = self.view, 0
+        elif (
+            key in ("p", "P", "з")
+            and sp is not None
+            and (getattr(sp.s, "plan_steps", ()) or sp.s.session_id.startswith("codex:"))
+        ):
+            sp.plan_open, sp.scroll = True, 0
         elif key in ("up", "down"):
             step = 1 if key == "down" else -1
             if (sp := self.current_session()) is not None:
+                if sp.view == "graph" and not sp.plan_open and getattr(sp.s, "plan_steps", ()):
+                    sp.move_plan(step)
                 sp.scroll += step
             else:
                 self._step_phase(step)
@@ -215,7 +227,7 @@ class App:
             if (p := self.current()) is not None:
                 p.phase_sel, p.scroll = None, 0
             elif (sp := self.current_session()) is not None:
-                sp.scroll = 0
+                sp.scroll, sp.plan_sel = 0, None
         elif key == "enter" and self.mode == "overview" and items:
             self.open(items[0])
         return True
@@ -225,6 +237,8 @@ class App:
         p = self.current() or self.current_session()
         if p is None:
             return
+        if isinstance(p, SessionPainter) and p.view == "graph" and not p.plan_open and getattr(p.s, "plan_steps", ()):
+            p.move_plan({"pgup": -5, "pgdn": 5, "home": -(10**6), "end": 10**6}[key])
         if key == "pgup":
             p.scroll -= p.page
         elif key == "pgdn":
@@ -445,7 +459,11 @@ class _Formatter(argparse.HelpFormatter):
 def build_parser() -> argparse.ArgumentParser:
     """The command line, described in the current language (see i18n.use_lang)."""
     ap = argparse.ArgumentParser(
-        prog="wfwatch", description=tr("cli.description"), add_help=False, formatter_class=_Formatter
+        prog="wfwatch",
+        description=tr("cli.description"),
+        epilog=tr("cli.integration"),
+        add_help=False,
+        formatter_class=_Formatter,
     )
     pos = ap.add_argument_group(tr("cli.arguments"))
     opt = ap.add_argument_group(tr("cli.options"))
@@ -491,6 +509,14 @@ def main(argv: list[str] | None = None) -> int:
 
 def _main(argv: list[str] | None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] == "codex":
+        from . import codex_setup
+
+        return codex_setup.main(argv[1:])
+    if argv and argv[0] == "plan":
+        from . import plans
+
+        return plans.main(argv[1:])
     debug, palette, lang = model.DEBUG, theme.current(), i18n.current()
     try:
         i18n.use_lang(lang_option(argv))  # an unknown value: auto here, then the parser rejects it

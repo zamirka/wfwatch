@@ -142,6 +142,9 @@ jobs:
           wfwatch --once --lang ru --width 120
           code=0; wfwatch > /dev/null 2>&1 || code=$?
           test "$code" -eq 2  # the full-screen mode needs a terminal: a message and code 2, not a hang
+      - name: Check optional Codex integration from the installed wheel
+        working-directory: ${{ runner.temp }}
+        run: '"$RUNNER_TEMP/venv/bin/python" "$GITHUB_WORKSPACE/scripts/check_codex_install.py"'
       - name: Run the installed command on demo data
         working-directory: ${{ runner.temp }}
         run: |

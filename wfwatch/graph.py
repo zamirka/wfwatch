@@ -9,10 +9,12 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from itertools import pairwise
 from typing import NamedTuple
 
 from rich.cells import cell_len, get_character_cell_size
+from rich.console import Console
 from rich.text import Text
 
 from .i18n import styled
@@ -867,10 +869,16 @@ SESSION_FANS = [
 ]
 
 
+@lru_cache(maxsize=512)
+def wrapped_title(title: str, width: int) -> tuple[str, ...]:
+    """Wrap literal text by terminal cells, including long words and wide glyphs."""
+    return tuple(line.plain for line in Text(title).wrap(Console(), max(1, width), overflow="fold"))
+
+
 class SessionPlanSidebar(GraphView):
     """The workflow phase-column layout, using only explicitly recorded checklist states."""
 
-    def __init__(self, session, at, t, animate):
+    def __init__(self, session, at, t, animate, selected=None):
         self.s, self.at, self.t, self.animate = session, at, t, animate
         self.steps = session.plan_steps
         self.live = session.status == BUSY
@@ -878,17 +886,71 @@ class SessionPlanSidebar(GraphView):
             (i for i, step in enumerate(self.steps) if step.status == "in_progress"),
             next((i for i, step in enumerate(self.steps) if step.status == "pending"), len(self.steps) - 1),
         )
+        if selected is not None:
+            self.selected_index = min(max(selected, 0), len(self.steps) - 1)
 
     def items(self) -> list[Item]:
         statuses = {"completed": DONE, "in_progress": RUNNING, "pending": PENDING}
         return [Item("phase", statuses[step.status], n=i + 1) for i, step in enumerate(self.steps)]
 
-    def side_item(self, c: Canvas, it: Item, y: int, current: bool) -> None:
-        color = phase_color(it.status)
-        c.put(2, y, status_icon(it.status), bold(color))
-        c.text(4, y, f"{it.n}. {self.steps[it.n - 1].step}", SIDE_W - 6, bold(color) if current else color)
-        if current:
-            c.put(1, y, "▸", bold(color))
+    def title_lines(self, index: int) -> tuple[str, ...]:
+        return wrapped_title(f"{index + 1}. {self.steps[index].step}", SIDE_W - 6)
+
+    def sidebar(self, c: Canvas, items: list[Item], ci: int, anchors: dict[int, int], h: int, nx: int, flows) -> None:
+        # Fit complete variable-height entries around the selection, never crop a title.
+        c.box(0, 3, SIDE_W, h - 3, C.dim, title=tr("diagram.phases"))
+        heights = [len(self.title_lines(i)) for i in range(len(items))]
+        room = h - 5
+        a = b = ci
+
+        def used(lo: int, hi: int) -> int:
+            return sum(heights[lo : hi + 1]) + (lo > 0) + (hi < len(items) - 1)
+
+        while True:
+            old = (a, b)
+            if a > 0 and used(a - 1, b) <= room:
+                a -= 1
+            if b + 1 < len(items) and used(a, b + 1) <= room:
+                b += 1
+            if old == (a, b):
+                break
+        y = 4
+        if a:
+            c.text(2, y, tr("more.dots", n=a), SIDE_W - 4, C.dim)
+            y += 1
+        selected_y = y
+        for index in range(a, b + 1):
+            item = items[index]
+            color = phase_color(item.status)
+            current = index == ci
+            c.put(2, y, status_icon(item.status), bold(color))
+            if current:
+                selected_y = y
+                c.put(1, y, "▸", bold(color))
+            for line in self.title_lines(index):
+                c.put(4, y, line, bold(color) if current else color)
+                y += 1
+        if b < len(items) - 1:
+            c.text(2, y, tr("more.dots", n=len(items) - b - 1), SIDE_W - 4, C.dim)
+        elif y < h - 1:
+            c.text(2, h - 2, self.stats()[0][0], SIDE_W - 4, C.dim)
+
+        target = anchors.get(ci, selected_y)
+        color = C.orange
+        if selected_y == target:
+            path = hpath(SIDE_W, nx - 2, target)
+        else:
+            xm = SIDE_W + 1
+            path = (
+                [(SIDE_W, selected_y)]
+                + [(xm, yy) for yy in range(selected_y, target, 1 if target > selected_y else -1)]
+                + hpath(xm, nx - 2, target)
+            )
+        for x, yy in path:
+            c.put(x, yy, "┄" if yy in (selected_y, target) else "┆", color)
+        c.put(nx - 1, target, "►", color)
+        if self.live and items[ci].status == RUNNING and self.animate:
+            flows.append((path, color, 0))
 
     def stats(self) -> list[tuple[str, str]]:
         done = sum(step.status == "completed" for step in self.steps)
@@ -910,7 +972,11 @@ class SessionGraph(Diagram):
         self.p = painter
         self.s: SessionWatch = painter.s
         self.live = self.s.status == BUSY
-        self.checklist = SessionPlanSidebar(self.s, at, t, animate) if getattr(self.s, "plan_steps", ()) else None
+        self.checklist = (
+            SessionPlanSidebar(self.s, at, t, animate, painter.selected_plan())
+            if getattr(self.s, "plan_steps", ())
+            else None
+        )
 
     def __rich_console__(self, console, options):
         w = options.max_width
@@ -924,6 +990,13 @@ class SessionGraph(Diagram):
     def bg_tasks(self) -> list[BgTask]:
         return self.s.recent_bg_tasks(self.at)
 
+    def title_lines(self, width: int) -> tuple[str, ...]:
+        if not self.checklist:
+            return ()
+        selected = self.checklist.selected_index
+        item = self.checklist.items()[selected]
+        return wrapped_title(f"{status_icon(item.status)} {selected + 1}. {self.checklist.steps[selected].step}", width)
+
     def plan(self, w: int, h: int) -> tuple[SessionLayout, Fan, Geo, int] | None:
         """How to draw on w×h, or None if the diagram does not fit."""
         if w < MIN_W:
@@ -931,12 +1004,21 @@ class SessionGraph(Diagram):
         side = w >= SIDEBAR_MIN_W
         sw = SIDE_W if self.checklist else self.ACTIONS_W
         cw = w - (sw + 4 if side else 0)
+        st = session_state_text(self.s, self.at, self.t, self.animate)
+        extra = max(0, len(self.title_lines(min(cw - 4, 60) - 4 - st.cell_len - 1)) - 1)
+        side_need = 0
+        if side and self.checklist:
+            ci = self.checklist.selected_index
+            required = len(self.checklist.title_lines(ci)) + (ci > 0) + (ci < len(self.checklist.steps) - 1)
+            side_need = required + 5
+            if side_need > h:
+                return None
         subs = list(self.s.subagents.values())
         bg = len(self.bg_tasks())
         for lay in (
-            SessionLayout(6, min(bg, self.BG_MAX)),
-            SessionLayout(5, min(bg, self.BG_MAX)),
-            SessionLayout(5, min(bg, 1)),
+            SessionLayout(6 + extra, min(bg, self.BG_MAX)),
+            SessionLayout(5 + extra, min(bg, self.BG_MAX)),
+            SessionLayout(5 + extra, min(bg, 1)),
         ):
 
             def need(f: Fan, rows: int, lay: SessionLayout = lay) -> int:
@@ -946,7 +1028,7 @@ class SessionGraph(Diagram):
             got = choose(len(subs), cw, h - TOP, side, need, SESSION_FANS)
             if got is not None:
                 f, geo = got
-                return lay, f, geo, TOP + need(f, geo.rows)
+                return lay, f, geo, max(TOP + need(f, geo.rows), side_need)
         return None
 
     def draw(self, w: int, h: int, plan=None) -> Canvas:
@@ -981,17 +1063,12 @@ class SessionGraph(Diagram):
         c.box(nx, y, node_w, lay.node_h, state.color, heavy=True)
         iw, ix = node_w - 4, nx + 2
         st = session_state_text(s, self.at, self.t, self.animate)
+        title = self.title_lines(iw - st.cell_len - 1)
+        extra = max(0, len(title) - 1)
         if self.checklist:
-            selected = self.checklist.selected_index
-            step = self.checklist.steps[selected]
-            item = self.checklist.items()[selected]
-            c.text(
-                ix,
-                y + 1,
-                f"{status_icon(item.status)} {selected + 1}. {step.step}",
-                iw - st.cell_len - 1,
-                bold(phase_color(item.status)),
-            )
+            item = self.checklist.items()[self.checklist.selected_index]
+            for offset, line in enumerate(title):
+                c.put(ix, y + 1 + offset, line, bold(phase_color(item.status)))
         else:
             c.parts(
                 ix,
@@ -1002,7 +1079,7 @@ class SessionGraph(Diagram):
         c.rich(ix + iw - st.cell_len, y + 1, st)
         c.parts(
             ix,
-            y + 2,
+            y + 2 + extra,
             [
                 (s.project, C.cyan),
                 (f" · {place}" if place else "", C.dim),
@@ -1010,8 +1087,8 @@ class SessionGraph(Diagram):
             ],
             iw,
         )
-        row = y + 3
-        if lay.node_h >= 6:
+        row = y + 3 + extra
+        if lay.node_h - extra >= 6:
             c.rich(ix, row, sparkline(s.main, self.at, iw))
             row += 1
         c.text(ix, row, "→ " + (action_text(s.main.last_action) or "…"), iw, C.text)
@@ -1069,7 +1146,12 @@ class SessionGraph(Diagram):
         sw = self.ACTIONS_W
         c.box(0, 3, sw, h - 3, C.dim, title=tr("session.actions"))
         mine = [e for e in self.s.events if e.who == self.s.main.label][::-1]
-        c.text(2, anchor - 1, tr("session.newest"), sw - 4, C.dim)
+        hint = (
+            "session.plan_missing"
+            if (self.s.session_id.startswith("codex:") and not self.s.plan_steps)
+            else "session.newest"
+        )
+        c.text(2, anchor - 1, tr(hint), sw - 4, C.dim)
         for i, e in enumerate(mine[: max(0, h - 2 - anchor)]):
             y = anchor + i
             first = i == 0

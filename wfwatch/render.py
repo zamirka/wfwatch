@@ -323,6 +323,24 @@ class CardsView:
                     yield Segment.line()
             return
 
+        if getattr(self.owner, "line_scroll", False):
+            lines = [line for i in range(n) for line in (leads[i] if i else []) + bodies[i]]
+            room = max(1, h - 2)
+            start = min(max(self.owner.scroll, 0), max(0, len(lines) - room))
+            self.owner.scroll, self.owner.page = start, room
+            visible = lines[start : start + room]
+            if h >= 3:
+                up = tr("more.up", n=start, key="↑ / PgUp") if start else ""
+                remaining = max(0, len(lines) - start - room)
+                down = tr("more.down", n=remaining, key="↓ / PgDn") if remaining else ""
+                visible = console.render_lines(Text(up, style=C.dim), opts, pad=True) + visible
+                visible += [[Segment(" " * w)]] * max(0, h - 1 - len(visible))
+                visible += console.render_lines(Text(down, style=C.dim), opts, pad=True)
+            for line in visible[:h]:
+                yield from line
+                yield Segment.line()
+            return
+
         def fill(start: int) -> int:
             used, end = (1 if start > 0 else 0), start
             while end < n:
@@ -685,6 +703,13 @@ def layout(parts: list[tuple[RenderableType, int | None]]) -> Layout:
 def session_plan_summary(s: SessionWatch) -> Text | None:
     steps = getattr(s, "plan_steps", ())
     if not steps:
+        if s.session_id.startswith("codex:"):
+            return Text(
+                tr("session.plan_unreadable" if getattr(s, "plan_read_error", False) else "session.plan_missing"),
+                style=C.dim,
+                no_wrap=True,
+                overflow="ellipsis",
+            )
         return None
     done = sum(step.status == "completed" for step in steps)
     title = tr("session.plan", progress=f"{done}/{len(steps)}")
@@ -699,7 +724,7 @@ def session_plan_panel(s: SessionWatch, start: int = 0, limit: int = 5) -> Panel
     lines = []
     for step in steps[start : start + limit]:
         icon, color = {"completed": ("✓", C.green), "in_progress": ("●", C.blue), "pending": ("○", C.dim)}[step.status]
-        lines.append(Text(f"{icon} {step.step}", style=color, no_wrap=True, overflow="ellipsis"))
+        lines.append(Text(f"{icon} {step.step}", style=color, overflow="fold"))
     return Panel(Group(*lines), title=session_plan_summary(s), title_align="left", border_style=C.blue, box=box.ROUNDED)
 
 
@@ -709,9 +734,30 @@ class SessionPainter:
     def __init__(self, s: SessionWatch, colors: AgentColors | None = None, view: str = "graph"):
         self.s = s
         self.view = view
+        self.plan_sel: int | None = None
+        self.plan_open = False
         self.scroll = 0
         self.page = 1
         self.colors = colors if colors is not None else AgentColors()
+
+    @property
+    def line_scroll(self) -> bool:
+        return self.plan_open or bool(getattr(self.s, "plan_steps", ()))
+
+    def selected_plan(self) -> int:
+        steps = getattr(self.s, "plan_steps", ())
+        if not steps:
+            return 0
+        if self.plan_sel is not None:
+            self.plan_sel = min(max(0, self.plan_sel), len(steps) - 1)
+            return self.plan_sel
+        return next(
+            (i for i, step in enumerate(steps) if step.status == "in_progress"),
+            next((i for i, step in enumerate(steps) if step.status == "pending"), len(steps) - 1),
+        )
+
+    def move_plan(self, delta: int) -> None:
+        self.plan_sel = min(max(0, self.selected_plan() + delta), len(self.s.plan_steps) - 1)
 
     def color(self, label: str) -> str:
         return self.colors(label)
@@ -762,8 +808,25 @@ class SessionPainter:
         s = self.s
         out: list[Section] = []
         steps = getattr(s, "plan_steps", ())
+        if not steps and s.session_id.startswith("codex:"):
+            out.append(
+                Section(
+                    Text(
+                        tr(
+                            "session.plan_unreadable"
+                            if getattr(s, "plan_read_error", False)
+                            else "session.plan_missing"
+                        ),
+                        style=C.dim,
+                    )
+                )
+            )
+            if self.plan_open:
+                out.append(Section(Text(tr("session.plan_help"), overflow="fold")))
         for start in range(0, len(steps), 5):
             out.append(Section(session_plan_panel(s, start)))
+        if self.plan_open:
+            return out, 0
         tasks = s.recent_bg_tasks(at)
         if tasks:
             lines = [
@@ -797,10 +860,19 @@ class SessionPainter:
         return out, 0
 
     def keys(self, multi: bool = False) -> KeyBar:
-        return keybar("session", multi, False, self.view)
+        if self.plan_open:
+            return KeyBar([("↑↓ PgUp PgDn", tr("key.scroll"), 1), ("p", tr("key.back"), 0), ("q", tr("key.quit"), 0)])
+        bar = keybar("session", multi, False, self.view, self.plan_sel is not None)
+        if getattr(self.s, "plan_steps", ()) or self.s.session_id.startswith("codex:"):
+            bar.items.insert(0, ("p", tr("key.plan"), 1))
+        if getattr(self.s, "plan_steps", ()):
+            bar.items.insert(1, ("↑↓", tr("key.phase" if self.view == "graph" else "key.scroll"), 2))
+        return bar
 
     def _parts(self, w: int, h: int, tabs, keys, animate: bool) -> list[tuple[RenderableType, int | None]]:
         at, t = now(), time.monotonic()
+        if self.plan_open:
+            return [(self.header(at), 2), (CardsView(self, at, t, animate), None), (keys, 1)]
         fixed = 2 + (1 if tabs is not None else 0)
         if self.view == "graph" and w >= MIN_W:
             sg = SessionGraph(self, at, t, animate=animate)
@@ -840,6 +912,8 @@ class SessionPainter:
     def snapshot(self, log_rows: int = 12, tabs: RenderableType | None = None, height: int = 30) -> RenderableType:
         def build(w: int, _h) -> RenderableType:
             at, t = now(), 0.0
+            if self.plan_open:
+                return Group(self.header(at), CardsView(self, at, t, False))
             log = log_panel(self.log_items(log_rows), log_rows)
             if self.view == "graph" and w >= MIN_W:
                 sg = SessionGraph(self, at, t, height, animate=False)
@@ -929,7 +1003,7 @@ class Overview:
         return (
             4
             + (1 if kind == "session" and obj.running_bg_tasks() else 0)
-            + (1 if kind == "session" and getattr(obj, "plan_steps", ()) else 0)
+            + (1 if kind == "session" and session_plan_summary(obj) is not None else 0)
         )
 
     @staticmethod

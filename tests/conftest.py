@@ -350,3 +350,8 @@ def opencode_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         yield home
     finally:
         home.close()
+
+
+@pytest.fixture(autouse=True)
+def isolate_explicit_plans(tmp_path, monkeypatch):
+    monkeypatch.setenv("WFWATCH_PLAN_DIR", str(tmp_path / "wfwatch-plans"))

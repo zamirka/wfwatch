@@ -30,3 +30,13 @@ and no adapter infers steps from commands or messages.
 Release checks: complete pytest suite (including encoding-warning mode), Ruff, wheel/sdist build,
 Twine metadata checks, clean-wheel CLI and source-distribution tests, then GitHub CI. Update the
 user installation from the published GitHub tag, with a final check outside the working tree.
+
+Explicit Codex plans are also supported by `wfwatch/plans.py` and `wfwatch plan`. See
+[approved plans](docs/codex-approved-plans.md) and `skills/wfwatch-plan/SKILL.md`. They override
+native plan state per full thread UUID; the monitor never writes. Tests live in
+`tests/test_explicit_plans.py`. Approval metadata is agent-reported, not a runtime permission gate.
+
+Version 0.6.0 ships `wfwatch codex setup/status/remove`. Setup previews by default; `--apply`
+backs up originals and changes only owned content. `--require-approval` is opt-in. Package data
+`wfwatch/data/codex-plan.md` must match the source skill. Global user config is never auto-installed
+by the package. See `tests/test_codex_setup.py` and `scripts/check_codex_install.py`.

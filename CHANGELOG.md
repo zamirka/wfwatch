@@ -7,7 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-21
+
+### Added
+
+- Optional Codex setup/status/remove commands with preview, backups, conflict detection and
+  bundled skill. Strict pre-tool plan approval is an explicit opt-in mode.
+- Missing/invalid plan explanations and setup help inside the monitor.
+- Clean-wheel integration lifecycle checks in CI.
+
+- Explicit Codex plans through `wfwatch plan set/show/step`, with session identity, approval
+  references, revision checks and live rendering in the existing plan views.
+- Companion skill for recording and updating user-approved plans without native `update_plan`.
+
 ### Fixed
+
+- Session diagram titles wrap in both the phase column and selected-step node. Variable-height
+  entries stay fully visible as selection moves; oversized diagrams fall back to scrollable cards.
+
+- Codex/OpenCode session plan arrows now select diagram steps; full-plan reading mode (`p`)
+  and wrapped, line-scrollable cards make long steps reachable in small terminals.
 
 - Starting an empty monitor no longer pins the last historical Claude workflow indefinitely in
   the overview. Explicit selection with `--run` still opens historical workflows.
@@ -217,7 +236,8 @@ Claude Code 2.1.311.
   is restored after `q`, Ctrl+C, SIGTERM and SIGHUP.
 - `--version` and `python -m wfwatch`.
 
-[Unreleased]: https://github.com/zamirka/wfwatch/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/zamirka/wfwatch/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/zamirka/wfwatch/compare/v0.5.1...v0.6.0
 [0.4.1]: https://github.com/zamirka/wfwatch/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/zamirka/wfwatch/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/zamirka/wfwatch/compare/v0.3.1...v0.3.2

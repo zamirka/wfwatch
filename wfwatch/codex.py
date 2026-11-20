@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import model as m
+from . import plans
 
 CODEX_DIR = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
 
@@ -176,6 +177,8 @@ class CodexWatch(m.SessionWatch):
         self.writer_alive = False
         self.plan_steps: list[m.PlanStep] = []
         self.plan_explanation = ""
+        self._native_plan = ([], "")
+        self.plan_read_error = False
         self.main.label = label or info.name
         # A long turn can push turn_context out of the activity tail. Seed its model
         # from a bounded header; later context records still override it normally.
@@ -187,6 +190,7 @@ class CodexWatch(m.SessionWatch):
                     self.main.model = m._s(context.get("model")) or self.main.model
 
     def poll(self, info=None, *, expire=True) -> None:
+        self.plan_steps, self.plan_explanation = self._native_plan
         entries = self.main.tail.read()
         if self.main.tail.reset:
             self.main.tail.reset = False
@@ -208,6 +212,15 @@ class CodexWatch(m.SessionWatch):
                 self._feed(entry)
             except m.RECORD_ERRORS:
                 continue
+        self._native_plan = (list(self.plan_steps), self.plan_explanation)
+        self.plan_read_error = False
+        try:
+            explicit = plans.read(self.session_id)
+        except (OSError, ValueError, TypeError, RecursionError):
+            explicit = None
+            self.plan_read_error = True
+        if explicit is not None:
+            self._plan_update(explicit)
         at = m.now()
         if expire:
             self.expire_tasks(at)

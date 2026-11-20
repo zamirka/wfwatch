@@ -4,362 +4,301 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
-A live terminal view of Claude Code [workflows](https://code.claude.com/docs/en/workflows),
-[subagents](https://code.claude.com/docs/en/sub-agents) and sessions, alongside OpenAI Codex and
-OpenCode sessions.
+A local terminal dashboard for **Claude Code, OpenAI Codex and OpenCode**: sessions across projects,
+workflow phases, explicit plans, subagents, background commands and a shared activity log.
 
 [Русская версия](README.ru.md)
 
-A workflow runs dozens of agents in phases while your sessions keep working in other projects.
-wfwatch shows all of it in a separate terminal: which workflows are running, which phase each one
-is in and what every agent is doing right now, which sessions are working, waiting for your
-answer or running a background command. It only reads local files and databases Claude Code, Codex
-and OpenCode already keep, so it never slows down or interrupts anything. Claude Code's own
-`/workflows` view shows the runs of a session inside that session; wfwatch watches every session in
-every project at once.
+Run wfwatch in a separate terminal next to your coding agents. It reads their existing local
+history; no hooks, API keys or connection to a model provider are needed. It does not modify agent
+sessions or stop their processes.
 
-wfwatch is an unofficial tool, not affiliated with or endorsed by Anthropic (see
-[Disclaimer](#disclaimer)).
+![Synthetic demo: overview, workflow phases and a session with subagents](docs/demo.gif)
 
-![wfwatch: the overview, then a workflow moving on to its next phase, then a session with two subagents](docs/demo.gif)
+All screenshots use [synthetic demo data](#try-it-on-demo-data).
 
-*All screenshots are made from [synthetic demo data](#try-it-on-demo-data).*
+## Install and update
 
-## Codex sessions
-
-Run `wfwatch` or `wfwatch --overview` as usual. Codex CLI and app sessions appear automatically
-beside Claude Code sessions. The reader uses local `~/.codex/sessions` rollout files
-(`CODEX_HOME` overrides the directory); no hooks, API keys or network requests are needed.
-It shows the model, tool activity and token usage, with child and nested agent threads grouped
-under their root session and a shared activity log. Background commands from `exec_command`,
-`write_stdin` and `functions.exec` appear with their output and exit status, even after the agent
-finishes its turn. Yielded code cells remain visible until `functions.wait` finishes them.
-
-When Codex records an explicit checklist through `update_plan` or a `plan_update` event,
-wfwatch draws its stages in the workflow phase column, linked to the current session block. The overview shows
-completed/total steps and the current step. Plans are restored from the rollout on startup;
-press `v` for cards and use PgUp/PgDn to browse long plans. Each child thread keeps its own plan.
-No plan is inferred from messages or commands, and ending a turn does not complete its steps.
-
-On macOS and Linux, wfwatch uses the process holding the rollout open for writing to keep long,
-silent agents visible. When a child command can be associated with its thread, it also shows its
-busiest process, CPU usage and the last line of a redirected stdout/stderr file. Association uses
-`CODEX_THREAD_ID` and the command; when the OS hides the environment, it requires a unique matching
-command and launch time under the verified writer. Ambiguous processes are left unassigned.
-Tool session identifiers are never treated as OS process ids.
-
-The reader replays relevant rollout records on startup, then reads only appended data; the visible
-log is bounded. Completed sessions remain visible for 15 minutes. Without OS evidence, unfinished
-turns and commands become stale after an hour without activity. Process disappearance is shown as
-stale unless an exit result supplies the actual exit code. An open rollout file alone does not keep
-a background command running: after an hour of silence,
-that command needs positive child-process evidence. Sequential `text(await tools.exec_command(...))`
-and `text(await tools.write_stdin(...))` results are correlated in order, including across code-cell
-waits. Complex JavaScript is not evaluated or assigned speculative command/result associations.
-Exact approval/waiting state is not recorded reliably in rollouts. Web-only ChatGPT conversations
-are not local rollouts; Claude workflow phase diagrams still use the Claude workflow journals, which Codex does not generate.
-The rollout format is internal and may change between Codex versions.
-
-See the [historical parity audit](docs/codex-parity-audit.md) for the migrated fixes and tests.
-
-## OpenCode sessions
-
-Run `wfwatch` or `wfwatch --overview` as usual. Local OpenCode sessions appear automatically beside
-Claude Code and Codex sessions. The reader opens `~/.local/share/opencode/opencode.db` (honouring
-`XDG_DATA_HOME`; `WFWATCH_OPENCODE_DB` overrides the file) in SQLite read-only mode, so it never
-writes to the database of a running app.
-
-It shows the model, token usage, tool activity and a shared activity log. Child sessions are grouped
-under their root, and a subagent report finishes the child. Background shells appear with their
-command, the last line of the `.out` file OpenCode streams their output to and their exit code. On
-macOS and Linux the process writing that file is found by the file descriptor, as for Codex, giving
-its CPU usage.
-
-An experimental `todowrite` checklist becomes the session plan: its progress appears in the overview
-and the full list in cards view. Cancelled items are left out, and a later call replaces the list.
-
-OpenCode keeps no per-session process. A session counts as working while its turn is open
-(`time_busy` after `time_idle`) and is left out after an hour of silence. A running `question`,
-`plan` or `permission` tool is shown as waiting for your answer. OpenCode records no workflow phase
-journal, so workflow diagrams stay Claude-specific and an OpenCode session always appears as a
-session. The database schema belongs to OpenCode and may change between versions.
-
-See the [OpenCode parity audit](docs/opencode-audit.md) for the sources, data boundaries and tests.
-
-## Install
+Requires Python 3.10+ and a UTF-8 terminal. macOS, Linux and native Windows are supported;
+Windows Terminal is recommended on Windows. Process and CPU inspection is available on macOS/Linux.
 
 With [uv](https://docs.astral.sh/uv/):
 
-```bash
+```sh
 uv tool install git+https://github.com/zamirka/wfwatch
+wfwatch --version
+wfwatch
 ```
 
-or with [pipx](https://pipx.pypa.io/):
+Update from the current `main` branch:
 
-```bash
+```sh
+uv tool install --force --upgrade git+https://github.com/zamirka/wfwatch
+```
+
+Or use [pipx](https://pipx.pypa.io/):
+
+```sh
 pipx install git+https://github.com/zamirka/wfwatch
+pipx reinstall wfwatch  # update an existing installation
 ```
 
-To update: `uv tool upgrade wfwatch` or `pipx reinstall wfwatch`. To remove:
-`uv tool uninstall wfwatch` or `pipx uninstall wfwatch`.
+To install a specific [release](https://github.com/zamirka/wfwatch/releases), append its tag to the
+Git URL, for example `git+https://github.com/zamirka/wfwatch@v0.5.1`. A tag stays on that version;
+install a newer tag explicitly to update. This README describes the current `main` branch.
 
-From a clone of the repository:
+Remove with `uv tool uninstall wfwatch` or `pipx uninstall wfwatch`.
 
-```bash
-git clone https://github.com/zamirka/wfwatch
-cd wfwatch
-python3 -m venv .venv
-.venv/bin/pip install -e .
-.venv/bin/wfwatch --version
+## Quick start
+
+```sh
+wfwatch                              # live view; a single recent workflow may open directly
+wfwatch --overview                   # always start with the overview
+wfwatch --cards                      # detailed sessions/workflows as cards
+wfwatch --once --overview --width 160 --lang en  # one snapshot, then exit
+wfwatch --list                       # list Claude workflow runs
+wfwatch wf_1a2b                      # explicitly select a workflow by ID or prefix
+wfwatch hardening                    # select one by a substring of its script name
 ```
 
-`python -m wfwatch` works too.
+The live view needs an interactive terminal. Use `--once` for an agent to read a snapshot or for
+output to a file/pipe. `python -m wfwatch` is equivalent to the executable.
 
-## Usage
+An empty monitor stays empty. It does not automatically pin an old workflow from history.
+A workflow explicitly selected on the command line stays selected, including historical runs.
+`--list` lists Claude workflows, not all Codex/OpenCode sessions.
 
-Run it in a terminal of its own, next to Claude Code:
+## What is supported
 
-```bash
-wfwatch              # everything that is going on; a single running workflow opens straight in its diagram
-wfwatch -o           # start with the overview anyway
-wfwatch --list       # recent runs: id, workflow, project, session, state, agents, time
-wfwatch wf_1a2b      # one run, by its id or the beginning of it (stays on it)
-wfwatch hardening    # one run, by a part of the workflow name
-wfwatch -c           # the detailed view as cards instead of a diagram
-wfwatch --once       # print one frame and exit
+| Capability | Claude Code | Codex CLI/app | OpenCode |
+|---|---|---|---|
+| Sessions, model, recorded token usage, tool activity | Yes | Yes | Yes |
+| Subagents and shared activity log | Yes | Nested threads | Child sessions |
+| Workflow journals with phases and agent results | Yes | No | No |
+| Explicit checklist rendered as stages | Workflow phases | `update_plan`, `plan_update`, optional companion | Experimental `todowrite` |
+| Background commands, recorded output/completion | Yes | `exec_command`, `write_stdin`, code cells | Shell jobs and completion messages |
+| Process, CPU and redirected output discovery | macOS/Linux | macOS/Linux | macOS/Linux |
+| Exact approval/waiting state | Registry and history | Not reliably recorded | Running `question`, `plan`, `permission` tools |
+
+A checklist is the agent's recorded plan. wfwatch does not invent steps from prose, assign a
+subagent to a step without evidence, or mark a step complete just because the agent ended a turn.
+
+### Plans and stages
+
+Codex and OpenCode use the same phase-column layout as the Claude workflow view: recorded stages
+on the left, the selected stage connected to the session block, completed stages marked ✓,
+the current stage highlighted and pending stages dimmed. The overview shows completed/total steps
+and the current step. Each child thread/session keeps its own plan.
+
+The phase column needs at least 100 terminal columns. On narrower terminals the view is compact;
+below 70 columns it falls back to cards. Press `v` for cards and use PgUp/PgDn to reach all items
+of a long checklist. Workflow phases and session plans support manual selection with ↑/↓
+and following the active stage with `f`.
+
+**Codex:** native `update_plan` and `plan_update` records work automatically. If the tool is
+unavailable, connect the optional companion skill:
+
+```sh
+wfwatch codex setup          # preview only
+wfwatch codex setup --apply  # install after reviewing the changes
+wfwatch codex status
 ```
 
-When no workflow and no session is active, wfwatch opens the most recent run. Unless a run was
-given on the command line, the detailed view of a workflow moves on to a new run once the current
-one has finished. `wfwatch --help` lists every option: `-n` (how many runs `--list` shows), `-a`
-(cards: expand every phase), `--width` (for `--list` and `--once`), `--theme`, `--lang`,
-`--debug`, `--version`.
+Standard mode follows your existing authorization policy. To require agreement on a proposed plan
+before any tools, including reads, explicitly choose `setup --require-approval --apply` instead.
+Start a new Codex session. Ask the agent to record and update its plan using wfwatch-plan.
+Instructions guide the agent; they do not technically block tools or authenticate consent.
 
-### Keys
+After upgrading wfwatch, rerun setup to update the skill; without a mode flag it preserves your
+choice. `wfwatch codex remove --apply` removes only managed integration content, preserving personal
+instructions and plans. Preview, backups, conflicts, custom `CODEX_HOME`, commands and limitations
+are described in [Codex setup](docs/codex-approved-plans.md). Package installation alone changes no
+Codex settings. Missing plans show a hint; `p` opens help. Long diagram titles wrap; `p` also opens
+the complete plan, with Up/Down and PgUp/PgDn scrolling, Escape to return. Restart the monitor after
+upgrading. A textual plan in chat is not automatically converted into step statuses.
 
-| Key | What it does |
-|---|---|
-| `1`–`9` | open the item with this number: workflows first, then sessions, as numbered in the overview. Two digits in a row open item 10 and above |
-| `o`, `0`, Esc | back to the overview |
-| Tab, → / Shift+Tab, ← | next / previous item |
-| Enter | in the overview: open the first item |
-| ↑ / ↓ | in a workflow: previous / next phase (the view stops following the running one); in the cards of a session: scroll |
-| `f` | in a workflow: follow the running phase again |
-| PgUp / PgDn, Home / End | in cards: scroll by a page, to the top, to the bottom |
-| `v` | switch between the diagram and cards |
-| `a` | in cards: expand every phase, or only the active ones |
-| `q`, Ctrl+C | quit |
+**OpenCode:** enable the experimental todo tool in your OpenCode config (merge this field into
+`~/.config/opencode/opencode.json`; do not replace your providers or other settings):
 
-The bottom line of the screen lists the keys that work on the current screen, as in htop. Letter
-keys also work in the Russian keyboard layout.
-
-### Try it on demo data
-
-No workflows of your own yet? The repository has a generator of synthetic data, with made-up
-projects and sessions only:
-
-```bash
-python3 scripts/demo_data.py /tmp/wfwatch-demo --live --opencode   # keeps it going; Ctrl+C to stop
-CLAUDE_CONFIG_DIR=/tmp/wfwatch-demo XDG_DATA_HOME=/tmp/wfwatch-demo wfwatch  # in another terminal
+```json
+{
+  "experimental": {
+    "todo": true
+  }
+}
 ```
 
-Agents call tools and finish, the next phase starts, the workflow completes, a background command
-prints its progress and ends. With `--opencode` two OpenCode sessions, one background shell and a
-subagent are added as a still picture. Without `--live` the script writes a still picture and exits.
+Then run `opencode reload`. The flag is documented in the
+[OpenCode changelog](https://github.com/anomalyco/opencode/blob/dev/CHANGELOG.md).
+A [project-level `experimental` object can override global options](https://github.com/anomalyco/opencode/issues/60410)
+in affected OpenCode versions; ensure the effective config for your project retains `todo: true`.
 
-## What you see
+Ask the agent to create a plan with **`todowrite`** and update `pending`, `in_progress` and
+`completed` items as it works. Every call carries the full list. Cancelled items are omitted;
+an empty list clears the plan. Enabling the flag makes the tool available; it does not force the
+model to call it or create plans retroactively. Re-reading an older message does not replace a
+newer checklist. The adapter was checked against OpenCode 2.3.0.
+
+## Views and controls
 
 ### Overview
 
-![The overview: two workflows and four sessions](docs/overview.svg)
+![Workflows and sessions across projects](docs/overview.svg)
 
-A block for each workflow: project, session, state and time, the chain of phases and a line for
-each running agent with its model and last action. Running workflows are shown, and finished ones
-for 30 more minutes. Below come the sessions (marked ◆): project, VSCode or terminal, model, how
-long the session has been in its state, its last action, its running subagents and background
-commands. A session that runs a workflow is there too, with the number of its workflow. A session
-waiting for your answer is yellow, an idle one is dim. Workflows and sessions are numbered in one
-sequence, workflows first. At the bottom is a common log, each line tagged with the number of its
-item.
+Workflows come first, followed by sessions (◆), with one shared numbering sequence. A block shows
+project, model, status, recent action, current agents/background commands and plan progress when
+available. The common log tags each event with its item's number. If space runs out, details fold,
+then blocks become single lines; Tab still reaches items that do not fit.
 
-A session is shown while it works, waits for you or runs a background command or agent, and for 15
-minutes after it goes idle. The registry of sessions sometimes keeps a session "busy" long after it
-has stopped, so a busy session whose history has been quiet for over an hour (a waiting one, for
-over three hours) is left out.
+### Workflow and session diagrams
 
-When the terminal is too low for everything, agent lines go first, then blocks fold into one line
-each, and at last a line says how many items are not shown (Tab reaches them).
+![Claude workflow phases and agent cards](docs/workflow.svg)
 
-### Workflow diagram
+Claude workflows show launch/finish, previous/current/next phases and their agents, recorded results,
+tool-call rhythm, context and elapsed time. Superseded attempts are dimmed and excluded from totals.
 
-![The diagram of a running workflow: the phase column, the current phase fanned out into agent cards](docs/workflow.svg)
+![A session and its subagents](docs/session.svg)
 
-- At the top: the name, state and time, the project and the session, the colors of the models.
-- On the left: the timeline from launch to finish, each phase with its time.
-- In the middle: the previous phase, the current one and the next. The current phase fans out
-  into agent cards; the ones that do not fit fold into a "+N more" card. Dots flow along the
-  links: blue to running agents, green back from finished ones.
-- An agent card: model, status and time, the rhythm of its tool calls over its life, the number
-  of calls and the context size, its last action (for a finished agent, the first line of its
-  result). An agent with no events for over three minutes is marked "silent".
-- At the bottom: the log and a status line, for example
-  `agents [3/6 done]   phase [2/3]   opus 5.5 [1 running]   calls [136]   out [48k]`. On a narrow
-  terminal the running models fold into one item (`3 models [3 running]`), then calls and output go.
+A session without a plan shows recent actions on the left and its subagents fanned out below its
+block. With a plan, the phase column replaces the recent-actions column; activity remains in the
+log. Background commands have a separate block. Subagents shown under a session are not thereby
+claimed to belong to its selected checklist step.
 
-The phase column needs at least 100 columns; below 70 columns the cards replace the diagram. The
-diagram adapts to the terminal, from 80x24 to large screens.
+Cards (`v` or `--cards`) provide a scrollable alternative. Claude workflow phases with running
+agents or errors expand automatically; `a` expands every phase. Session checklists are split into
+scrollable sections so long plans remain accessible.
 
-### Cards
+| Key | Action |
+|---|---|
+| `1`–`9`; two digits for 10+ | Open the numbered item |
+| `o`, `0`, Esc | Return to overview |
+| Tab / Shift+Tab, → / ← | Next / previous item |
+| Enter | Open the first item from overview |
+| ↑ / ↓ | Select a workflow/session plan stage; scroll cards or the full plan |
+| `f` | Follow the current Claude workflow phase; reset session scroll |
+| PgUp / PgDn, Home / End | Navigate plan stages, cards or the full plan |
+| p / Esc | Open the full session plan or setup help / return |
+| `v` | Switch diagram/cards |
+| `a` | Expand all Claude workflow phases in cards |
+| `q`, Ctrl+C | Quit |
 
-`v` or `-c`: each phase as a panel of agent cards. Running phases, phases with errors and the
-selected phase are expanded, the others take a line each (`a` expands them all). PgUp/PgDn scroll
-when the phases do not fit. When the cards of a phase do not fit on the screen, the cards go to the
-running agents first, then to the failed ones, and the others get a line each.
+The footer lists the available controls. Letter keys also work in the Russian keyboard layout.
 
-### Session
+### Status and retention
 
-![A session with two subagents fanned out](docs/session.svg)
+| Symbol | Meaning |
+|---|---|
+| ● | Running agent/phase or working session; animated in the live view |
+| ✓ | Completed |
+| ✗ | Failed |
+| ⚠ | Interrupted or stale: completion is not known |
+| ○ | Pending phase/step, or idle session |
+| ◷ | Waiting for you |
+| ◐ | Background work |
+| ↺ | Superseded agent attempt |
+| ■ | Killed workflow or closed owning session |
 
-On the left, the latest actions of the session (newest first); in the middle, the session block:
-state, model, rhythm of calls, last action or message. Its subagents fan out like the agents of a
-workflow phase. Background commands, running and recently finished, have a block of their own.
-At the bottom are the log of the session and its subagents and a status line:
-`opus 5.5 [working]   subagents [2 running / 2]   ctx [60k]   last action [1:03 ago]`.
+Finished Claude workflows stay in the overview for 30 minutes; idle sessions for 15 minutes.
+Discovery generally tracks activity within three hours. Busy sessions with no meaningful activity
+for an hour are hidden; waiting sessions have a three-hour cutoff. Verified Codex rollout writers
+can keep active turns visible beyond that cutoff. These are observation rules, not proof a task
+is hung or a measure of task completion.
+
+Background tasks use recorded lifecycle events, output changes and available OS evidence. An
+unchanged OpenCode `running` row is not a new heartbeat. Silent old tasks become stale without an
+invented exit code; stale child jobs must not keep an idle root visible forever.
 
 ### Background commands
 
-When a session starts a long command in the background (the Bash tool with `run_in_background`)
-and goes quiet, it is not idle: wfwatch shows it as "◐ background task", with the command, how
-long it has been running, the process it is running right now with its CPU load and the last line
-of its output:
+wfwatch shows the description/command, elapsed time, latest available output and recorded exit
+status. On macOS/Linux it can associate a command with its process, show CPU usage and find a
+redirected stdout/stderr file through OS file descriptors. Ambiguous matches are left unassigned;
+a tool's session ID is never treated as an OS PID. A Claude registry-only background task can be
+shown without command details when the transcript does not describe it.
 
+Codex code-mode commands and yielded cells are tracked independently of the agent turn. Sequential
+`text(await tools.exec_command(...))` / `write_stdin(...)` results can be matched across waits.
+Arbitrary JavaScript is never executed by wfwatch or used to guess associations.
+
+## Data sources and configuration
+
+| Source | Default path / override | Data read |
+|---|---|---|
+| Claude Code | `~/.claude`, `CLAUDE_CONFIG_DIR` | Session registry, JSONL transcripts, workflow scripts/journals, subagent transcripts |
+| Codex | `~/.codex/sessions`, `CODEX_HOME` | `rollout-*.jsonl`: turns, tools, tokens, plans, commands and thread ancestry |
+| OpenCode | `~/.local/share/opencode/opencode.db`, `XDG_DATA_HOME` or `WFWATCH_OPENCODE_DB` | SQLite `project`, `session_v2`, `session_message`, `job` |
+| Claude output | `/tmp/claude-<uid>/…/tasks/*.output` and permitted Claude roots | Last output line |
+| OpenCode output | `<database directory>/shell/*/*.out` | Shell output |
+| OS | `ps`; `lsof` on macOS, `/proc` on Linux | Process identity/tree, CPU and open files |
+
+OpenCode SQLite is opened with `mode=ro`. Transcripts are read incrementally; OpenCode message
+rows are re-read as they change in place. Polling is every 0.5 seconds; discovery/process refresh
+is every 3 seconds. Internal storage formats can change between agent versions.
+
+Use `--lang en` / `--lang ru`, or `WFWATCH_LANG`; otherwise the locale is used (English fallback).
+`--theme auto|dark|light` controls colors; `auto` uses `COLORFGBG` when available. `NO_COLOR` disables
+colors. `--width` sets snapshot/list width. `--debug` re-raises errors instead of displaying them.
+`wfwatch --help` lists all options; `-n` limits `--list`, `--all` expands workflow cards.
+
+## Try it on demo data
+
+From a repository clone, generate synthetic Claude workflows/sessions and OpenCode sessions:
+
+```sh
+python3 scripts/demo_data.py /tmp/wfwatch-demo --live --opencode
 ```
-⚙ background: Run benchmark suite · 5:30 · now python3 97% · «[35/42] bench_orm_select  33.90 ms ±0.3%»
+
+In another terminal, isolate all readers from your real sessions:
+
+```sh
+CLAUDE_CONFIG_DIR=/tmp/wfwatch-demo \
+CODEX_HOME=/tmp/wfwatch-demo/codex \
+WFWATCH_OPENCODE_DB=/tmp/wfwatch-demo/opencode/opencode.db \
+wfwatch --overview
 ```
 
-A command may send its output to a file of its own (`blender -b scene.blend -a > render.log 2>&1`),
-and then the output file of Claude Code stays empty. wfwatch asks the system which file the
-running process writes to and shows the last line of that file or of the output file, whichever
-was written last. A finished command shows its exit code.
+The live Claude story runs for about two minutes; OpenCode fixtures are a static snapshot.
+Without `--live`, the generator writes data and exits. Use `--lang ru` for Russian demo content.
 
-Claude Code keeps other work as a background command too, a Monitor for one. wfwatch finds no such
-command in the transcript, but the session registry says that one is running, so the session stays
-"◐ background task", only without these details.
+## Limits and privacy
 
-### States
-
-| | Agent or phase | Workflow | Session |
-|---|---|---|---|
-| ● | running | running | working |
-| ✓ | done | completed | |
-| ✗ | failed | failed | |
-| ⚠ | interrupted: the run ended or the session closed before the agent returned its result | | |
-| ○ | pending, or never ran | | idle |
-| ↺ | replaced by a later attempt after a resume (dimmed, not counted) | | |
-| ■ | | killed, or its session was closed | |
-| ◷ | | | waiting for you |
-| ◐ | | | background task |
-
-In the live view, what is running right now (an agent, a working session, a background command)
-has a spinner ◐◓◑◒ in place of ●; a still frame (`--once`, the screenshots) shows ●.
-
-There are no percentages: agents do not report them. Time, calls, the rhythm of calls and the last
-action show how an agent is getting on.
-
-## How it works
-
-wfwatch reads the files Claude Code keeps under `CLAUDE_CONFIG_DIR` (`~/.claude` by default) and
-the databases Codex and OpenCode write. Set `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or
-`WFWATCH_OPENCODE_DB` to watch another copy.
-
-| Source | What wfwatch takes from it |
-|---|---|
-| `projects/<project>/<session>.jsonl` | the session transcript: workflow launches and completion notices, background commands and agents, the session's own tool calls |
-| `projects/<project>/<session>/subagents/workflows/<run>/journal.jsonl` | which agents of a run started, returned a result or failed |
-| `projects/<project>/<session>/subagents/workflows/<run>/agent-<id>.jsonl` | an agent's transcript: tool calls, model, tokens |
-| `projects/<project>/<session>/workflows/scripts/<name>-<run>.js` | the `meta` of the workflow script: name, description, phases |
-| `projects/<project>/<session>/subagents/agent-*.jsonl` | ordinary subagents of a session |
-| `sessions/<pid>.json` | running sessions: name, status, working directory, where the session is open |
-| `/tmp/claude-<uid>/<project>/<session>/tasks/<task>.output` | the output of background commands (its last line) |
-| `CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` (default `~/.codex`) | Codex turns, tools, tokens, background commands and nested agents |
-| `$XDG_DATA_HOME/opencode/opencode.db` (default `~/.local/share/opencode`) | OpenCode sessions, messages, tokens, background jobs and subagent sessions, read-only |
-| `ps` | whether a session's process is alive, what its Bash tool is running right now |
-| `lsof` (macOS), `/proc/<pid>/fd` (Linux) | the file a background command writes to instead of its output file (`> render.log`): its last line |
-
-Transcripts are read incrementally: only the lines added since the last read, in chunks, so a long
-history stays cheap. Files are re-read twice a second; the list of runs, the sessions and the
-processes, every three seconds. Runs with activity in the last three hours are tracked.
-
-## Requirements
-
-- Python 3.10 or newer on macOS, Linux or Windows. On Windows use Windows Terminal (or another
-  console with escape sequences); there, background commands are shown without their processes,
-  CPU usage and output files, which are read with `ps`, `/proc` and `lsof`.
-- A UTF-8 terminal with 256 colors or truecolor and a font with box-drawing characters.
-- At least 100 columns for the full diagram with the phase column (80x24 works, with a compact
-  layout).
-- Claude Code, OpenAI Codex CLI/app and/or OpenCode. Checked against Claude Code 2.1.311, Codex
-  0.166.0 and OpenCode 2.3.0.
-
-## Language and colors
-
-The interface is in English or Russian: `--lang en|ru`, or the `WFWATCH_LANG` variable, or else
-the locale (`LC_ALL`, `LC_MESSAGES`, `LANG`: `ru_*` means Russian). English is the default.
-
-`--theme dark` suits a dark terminal background, `--theme light` a light one. The default, `auto`,
-reads `COLORFGBG` (set by many terminals) and falls back to dark. Main text uses the terminal's own
-foreground color. With `NO_COLOR` set, colors are dropped.
-
-## Limitations
-
-- wfwatch reads internal files of Claude Code. Their format is not documented and can change with
-  any update. If something stops showing up after an update, please open an issue with the output
-  of `wfwatch --version` and `claude --version`.
-- Some states are inferred. An ordinary subagent counts as running while its transcript has changed
-  in the last 90 seconds; a background one, until the notification of its end. A session is alive
-  while its process is (checked by process id and start time), so sessions running in another
-  container or on another machine that shares the directory look closed. A background command
-  started before its session was restarted is shown as lost.
-- OpenCode is read through one SQLite database; its schema is internal and may change. A database
-  with an unknown shape is skipped rather than guessed at. Without a per-session process, an
-  unfinished turn whose `time_busy` never closed is hidden after an hour of silence.
-- Only this machine and one `CLAUDE_CONFIG_DIR` at a time.
-
-## Privacy
-
-Everything stays on your machine. wfwatch reads the files and databases listed above and runs `ps`
-(and `lsof` on macOS); it writes nothing – the OpenCode database is opened read-only – opens no
-network connections and sends nothing anywhere.
-
-The screen does show what is in your transcripts: project and session names, file paths, commands,
-search queries, URLs and the first lines of what agents write. Keep that in mind when you share
-your screen or a screenshot. For a bug report, the demo data is a safe way to show a problem.
+- Local sessions only. Web-only ChatGPT/Claude conversations and remote/container process state
+  are outside coverage. Configure one root per supported source in each wfwatch process.
+- Native Windows supports keyboard input and UTF-8 redirected output; OS process/CPU/redirected
+  file discovery remains macOS/Linux-only. Known output files can still be read where available.
+- Status, token counters and usage come from recorded data; they are not billing or progress
+  guarantees. A quiet agent is not necessarily stuck. Codex approval state is not reliably recorded.
+- Unknown OpenCode schemas are not guessed. Per-session read failures appear through the shared
+  error handling; an unavailable/incompatible database can make its sessions disappear.
+- wfwatch itself makes no network requests, uses no provider credentials and does not modify agent
+  data. Installation downloads packages. Terminal output can contain private names, paths, commands,
+  URLs and message excerpts; redact it before sharing. Output paths are checked before reading.
 
 ## Development
 
-```bash
+```sh
+git clone https://github.com/zamirka/wfwatch
+cd wfwatch
 python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest -q
-.venv/bin/ruff check . && .venv/bin/ruff format --check .
+.venv/bin/python -m wfwatch --overview
+PYTHONWARNDEFAULTENCODING=1 .venv/bin/pytest -q -W error::EncodingWarning
+.venv/bin/ruff check .
+.venv/bin/ruff format --check .
 ```
 
-- `scripts/demo_data.py` writes the synthetic `CLAUDE_CONFIG_DIR` described above (`--help` for
-  the options, `--lang ru` for Russian content).
-- `scripts/screenshots.py` makes the pictures in `docs/` from that data: the SVG files with Rich,
-  the GIF with Pillow (`.venv/bin/pip install -e '.[demo]'`, then
-  `.venv/bin/python scripts/screenshots.py`). The clock and the process list are fixed, so with the
-  same version of Rich the SVG files come out the same every time.
+On Windows, use `.venv\Scripts\python.exe` / `.venv\Scripts\pip.exe` instead of `.venv/bin/…`.
+The encoding-warning environment-variable example above uses a POSIX shell.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the code style and how to report a problem without
-sharing private data, and [CHANGELOG.md](CHANGELOG.md) for the changes.
+`scripts/screenshots.py` renders the demo SVGs and GIF; install `.[demo]` for Pillow.
+See [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md),
+[the Codex audit](docs/codex-parity-audit.md) and [the OpenCode audit](docs/opencode-audit.md).
+Audits record their dated scope; current code/tests and changelog describe subsequent changes.
 
-## Disclaimer
+## Disclaimer and license
 
-wfwatch is an independent, unofficial project. It is not affiliated with, endorsed by or supported
-by Anthropic. Claude and Claude Code are trademarks of Anthropic, PBC. wfwatch reads files that
-Claude Code writes for its own use; their format may change with any Claude Code release.
-
-## License
+An independent, unofficial project, not affiliated with or endorsed by Anthropic, OpenAI or
+OpenCode's maintainers. Product names and trademarks belong to their owners. Agent storage formats
+are internal and may change.
 
 [MIT](LICENSE) © 2026 Zamir Musaev

@@ -26,7 +26,13 @@ reproduce it; a synthetic example is enough, please do not send real transcripts
 - It uses `ps` snapshots to see which sessions and child commands are alive, with an additional
   limited environment query for Codex candidates on macOS. Writable descriptors come from
   `lsof` on macOS or `/proc` on Linux.
-- It never writes files, never opens network connections and sends nothing anywhere.
+- The monitor never writes files, opens network connections or sends data anywhere.
+- Explicit `wfwatch plan set/step` commands write session-scoped JSON plans. Optional
+  `wfwatch codex setup/remove --apply` commands change only managed local Codex integration
+  content and save private backups. Preview and status do not write. Installing the package
+  does not run setup. No wfwatch command edits authentication or provider configuration.
+- Approval references in plans are agent-reported text, not authenticated consent. The skill
+  and AGENTS.md policy are instructions, not an enforcement boundary for tool execution.
 - It shows what is in your transcripts: prompts, commands, file names, lines of output. Keep that
   in mind when you share your screen or record it.
 

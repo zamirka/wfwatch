@@ -139,6 +139,8 @@ MESSAGES: dict[str, dict[str, Message]] = {
     "key.cards": {"en": "cards", "ru": "карточки"},
     "key.collapse": {"en": "collapse", "ru": "свернуть"},
     "key.expand": {"en": "expand", "ru": "развернуть"},
+    "key.plan": {"en": "full plan", "ru": "план целиком"},
+    "key.back": {"en": "back", "ru": "назад"},
     "key.quit": {"en": "quit", "ru": "выход"},
     # ---- cards ----
     "card.stats": {"en": "{calls} · ctx {ctx} · out {out}", "ru": "{calls} · ctx {ctx} · out {out}"},
@@ -179,6 +181,38 @@ MESSAGES: dict[str, dict[str, Message]] = {
     "stats.out": {"en": "out", "ru": "out"},
     "stats.time": {"en": "time", "ru": "время"},
     # ---- a session ----
+    "cli.integration": {
+        "en": "Optional Codex integration: wfwatch codex setup --help. Session plans: wfwatch plan --help.",
+        "ru": "Интеграция Codex по желанию: wfwatch codex setup --help. Планы: wfwatch plan --help.",
+    },
+    "session.plan_missing": {
+        "en": "No structured plan received · p: setup help",
+        "ru": "Структурированный план не передан · p: подключить",
+    },
+    "session.plan_unreadable": {
+        "en": "Plan file unreadable or invalid · p: help",
+        "ru": "Файл плана недоступен или повреждён · p: помощь",
+    },
+    "session.plan_help": {
+        "en": (
+            "A plan in chat text has no machine-readable step statuses. Native update_plan records are "
+            "read automatically. If that tool is unavailable, opt in to the companion skill:\n\nwfwatch "
+            "codex setup\nwfwatch codex setup --apply\nwfwatch codex status\n\nFor mandatory approval "
+            "before all tools, add --require-approval to setup. Start a new Codex session and ask it to"
+            " use wfwatch-plan for the authorized task. The skill updates statuses; wfwatch never "
+            "guesses them. For a file error, run wfwatch plan show --session FULL-UUID in that session "
+            "and resolve the reported error. Instructions are not a runtime tool lock."
+        ),
+        "ru": (
+            "План в тексте чата не содержит машиночитаемых статусов. Записи update_plan читаются "
+            "автоматически. Если инструмент недоступен, подключите скилл по желанию:\n\nwfwatch codex "
+            "setup\nwfwatch codex setup --apply\nwfwatch codex status\n\nДля обязательного согласования "
+            "любых инструментов добавьте --require-approval к setup. Начните новую сессию Codex и "
+            "попросите вести разрешённую задачу через wfwatch-plan. Статусы сообщает агент, wfwatch их "
+            "не угадывает. При ошибке файла выполните wfwatch plan show --session ПОЛНЫЙ-UUID в нужной "
+            "сессии и устраните указанную ошибку. Инструкции не блокируют инструменты технически."
+        ),
+    },
     "session.plan": {"en": "Plan · {progress}", "ru": "План · {progress}"},
     "session.subagents": {"en": "session subagents · {progress}", "ru": "субагенты сессии · {progress}"},
     "session.no_subagents": {"en": "no subagents", "ru": "субагентов нет"},
